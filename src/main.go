@@ -35,13 +35,13 @@ func main() {
 	}
 
 	client := anthropic.NewClient(opts...)
-	a := agent.New(client, cfg)
+	a := agent.New(&client, cfg)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	var history []anthropic.MessageParam
 
 	for {
-		fmt.Printf("%ss01 >> %s", ui.ColorCyan, ui.ColorReset)
+		fmt.Printf("%s >> %s", ui.ColorCyan, ui.ColorReset)
 		if !scanner.Scan() {
 			break
 		}
@@ -64,12 +64,10 @@ func main() {
 		// Print final text response if last message is from assistant
 		if len(history) > 0 {
 			last := history[len(history)-1]
-			if last.Role.Value == anthropic.MessageParamRoleAssistant {
-				for _, part := range last.Content.Value {
-					if tb, ok := part.(anthropic.TextBlockParam); ok {
-						if tb.Text.Value != "" {
-							fmt.Println(tb.Text.Value)
-						}
+			if last.Role == anthropic.MessageParamRoleAssistant {
+				for _, part := range last.Content {
+					if part.OfText != nil && part.OfText.Text != "" {
+						fmt.Println(part.OfText.Text)
 					}
 				}
 			}

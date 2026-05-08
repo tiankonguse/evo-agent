@@ -26,11 +26,13 @@ func New(client *anthropic.Client, cfg *config.Config) *Agent {
 // response, executes any tool calls, and returns true if another turn is needed.
 func (a *Agent) RunOneTurn(state *LoopState) bool {
 	resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewParams{
-		Model:     anthropic.F(anthropic.Model(a.cfg.ModelID)),
-		System:    anthropic.F([]anthropic.TextBlockParam{{Text: anthropic.F(a.cfg.SystemMsg)}}),
-		Messages:  anthropic.F(state.Messages),
-		Tools:     anthropic.F(tools.Tools),
-		MaxTokens: anthropic.F(int64(8000)),
+		Model: anthropic.Model(a.cfg.ModelID),
+		System: []anthropic.TextBlockParam{
+			{Text: a.cfg.SystemMsg},
+		},
+		Messages:  state.Messages,
+		Tools:     tools.Tools(),
+		MaxTokens: 8000,
 	})
 	if err != nil {
 		ui.PrintError(fmt.Sprintf("Error calling API: %v", err))
@@ -62,7 +64,7 @@ func (a *Agent) RunOneTurn(state *LoopState) bool {
 	return true
 }
 
-// Run drives the agent loop until the model stops requesting tool calls.
+// Loop drives the agent loop until the model stops requesting tool calls.
 func (a *Agent) Loop(state *LoopState) {
 	for a.RunOneTurn(state) {
 	}

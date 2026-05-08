@@ -1,20 +1,112 @@
 # evo-agent
+
 A step-by-step journey to implement an AI agent in Go.
 
-Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages the Anthropic API to perform tasks in a local workspace by executing shell commands.
+Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages the Anthropic API to perform tasks in a local workspace through a ReAct (Reason + Act) loop — the agent reasons, calls tools, observes results, and repeats until the task is complete.
 
 ## Features
-- **Bash Integration**: Can execute arbitrary bash commands to read, write, and manipulate the local filesystem.
-- **Multi-turn Reasoning**: Supports a loop of thought $\rightarrow$ action $\rightarrow$ observation.
-- **Colored CLI**: Clear terminal output distinguishing between thinking, tool calls, and final responses.
+
+- **Multi-tool Support**: bash, read_file, write_file, edit_file — all self-registering via `init()`
+- **Self-registering Tool Pattern**: Adding a new tool only requires a single new file; no central registration needed
+- **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
+- **Multi-turn Reasoning**: Drives a loop of thought → action → observation until the model stops requesting tool calls
+- **Colored CLI**: Clear terminal output distinguishing thinking, tool calls, responses, and errors
+
+## Project Structure
+
+```
+src/
+├── main.go                    # Entry point: input loop, history management
+├── go.mod
+└── internal/
+    ├── agent/
+    │   ├── loop.go            # Agent struct, RunOneTurn, Loop
+    │   └── state.go           # LoopState (Messages, TurnCount, TransitionReason)
+    ├── config/
+    │   └── config.go          # Config struct, LoadEnv, Load
+    ├── tools/
+    │   ├── tool.go            # ToolDef registry, Register, Tools, Dispatch, GenerateSchema
+    │   ├── executor.go        # Execute: iterate content blocks, run tool calls
+    │   ├── bash.go            # bash tool (run shell commands, 120s timeout)
+    │   ├── read_file.go       # read_file tool (read file with optional line limit)
+    │   ├── write_file.go      # write_file tool (write/create file with mkdir -p)
+    │   └── edit_file.go       # edit_file tool (exact-string replacement or create)
+    └── ui/
+        └── terminal.go        # ANSI color helpers for terminal output
+```
 
 ## Configuration
+
 The agent is configured via environment variables (or a `.env` file):
-- `MODEL_ID`: The Anthropic model to use (e.g., `claude-3-5-sonnet-20240620`).
-- `ANTHROPIC_API_KEY`: Your API key.
-- `ANTHROPIC_BASE_URL`: (Optional) Custom API endpoint.
+
+| Variable              | Required | Description                                      |
+|-----------------------|----------|--------------------------------------------------|
+| `MODEL_ID`            | Yes      | The Anthropic model to use (e.g. `claude-3-5-sonnet-20240620`) |
+| `ANTHROPIC_API_KEY`   | Yes*     | Your Anthropic API key                           |
+| `ANTHROPIC_BASE_URL`  | No       | Custom API endpoint (e.g. for proxies)           |
+
+> \* If `ANTHROPIC_BASE_URL` is set, the API key may be optional depending on the proxy configuration.
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+## Build & Run
+
+```bash
+# Build
+make build
+
+# Run tests
+make test
+
+# Or run directly
+cd src && go run main.go
+```
 
 ## Usage
-1. Set the environment variables.
-2. Run the agent: `go run main.go`.
-3. Enter your requests in the prompt. Type `q` or `exit` to quit.
+
+After starting the agent, type your request at the prompt:
+
+```
+>> list all Go files in this workspace
+>> read the file src/main.go and summarize it
+>> create a new file hello.go with a Hello World program
+>> exit
+```
+
+Type `q` or `exit` to quit.
+
+## Tools
+
+| Tool         | Description                                                     |
+|--------------|-----------------------------------------------------------------|
+| `bash`       | Run any shell command (timeout: 120s, max output: 50 000 chars) |
+| `read_file`  | Read a file's contents with an optional line limit              |
+| `write_file` | Write (or overwrite) a file, creating parent directories        |
+| `edit_file`  | Replace an exact string in a file, or create a new file         |
+
+## Adding a New Tool
+
+1. Create `src/internal/tools/<name>.go`
+2. Define an input struct with `jsonschema_description` tags
+3. Call `Register(ToolDef{...})` inside an `init()` function
+
+That's it — the tool is automatically available to the agent on next run.
+
+## Version History
+
+| Version | Description |
+|---------|-------------|
+| **v0.2.0** | Add `read_file`, `write_file`, `edit_file` tools; introduce self-registering `init()` pattern and table-driven tool dispatch |
+| **v0.1.0** | Initial release: ReAct loop + `bash` tool only |
+
+## Dependencies
+
+| Package                           | Purpose                              |
+|-----------------------------------|--------------------------------------|
+| `anthropic-sdk-go` v1.41.0        | Anthropic API client                 |
+| `invopop/jsonschema` v0.13.0      | Reflect Go structs → JSON Schema     |
+| `joho/godotenv` v1.5.1            | Load `.env` files                    |
