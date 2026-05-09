@@ -41,7 +41,7 @@ The agent is configured via environment variables (or a `.env` file):
 
 | Variable              | Required | Description                                      |
 |-----------------------|----------|--------------------------------------------------|
-| `MODEL_ID`            | Yes      | The Anthropic model to use (e.g. `claude-3-5-sonnet-20240620`) |
+| `MODEL_ID`            | Yes      | The Anthropic model to use                       |
 | `ANTHROPIC_API_KEY`   | Yes*     | Your Anthropic API key                           |
 | `ANTHROPIC_BASE_URL`  | No       | Custom API endpoint (e.g. for proxies)           |
 
@@ -96,10 +96,19 @@ Type `q` or `exit` to quit.
 
 That's it — the tool is automatically available to the agent on next run.
 
+## Blog
+
+| Article | Description |
+|---------|-------------|
+| [01-loop](blog/01-loop.md) | ReAct Loop — how the agent thinks, acts, and observes in a cycle |
+| [02-tools](blog/02-tools.md) | Tools — self-registering tool pattern and table-driven dispatch |
+| [03-prompts](blog/03-prompts.md) | Prompts & Context — system prompt, messages history, and the two-layer loop |
+
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.3.0** | Refactor loop: move REPL into `loop.go` (`Run` method), add `TurnCount`/`TransitionReason` to `LoopState`, generate `SystemMsg` in `config.go` |
 | **v0.2.0** | Add `read_file`, `write_file`, `edit_file` tools; introduce self-registering `init()` pattern and table-driven tool dispatch |
 | **v0.1.0** | Initial release: ReAct loop + `bash` tool only |
 

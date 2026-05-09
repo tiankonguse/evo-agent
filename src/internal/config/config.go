@@ -37,7 +37,7 @@ func Load() *Config {
 		APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
 		SystemMsg: fmt.Sprintf(
-			"You are a coding agent at %s. Use bash to inspect and change the workspace. Act first, then report clearly.",
+			"You are a coding agent at %s.",
 			cwd,
 		),
 	}

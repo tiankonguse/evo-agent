@@ -1,13 +1,12 @@
 ---
-title: "Agent 的本质：一个 Loop 循环"
-source: "https://mp.weixin.qq.com/s/dkdrwVlwe3IkH2hzSzy53A"
-author:
-  - "[[袁小康]]"
-published:
-created: 2026-05-08
+layout: post
+title: Agent 的本质：一个简单的循环 (Loop)
 description: "Agent = LLM (大脑) + Tools (手脚) + Loop (神经反射弧)。"
-tags:
-  - "clippings"
+keywords: 项目实践
+tags: [项目实践]
+categories: [程序人生]
+source: "https://mp.weixin.qq.com/s/dkdrwVlwe3IkH2hzSzy53A"
+created: 2026-05-08
 ---
 袁小康 *2026年5月7日 23:59*
 

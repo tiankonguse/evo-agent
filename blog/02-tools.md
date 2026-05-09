@@ -7,6 +7,7 @@ tags: [agent, tools, golang]
 categories: [程序人生]
 updateDate: 2026-05-07 12:13:00
 published: true
+source: "https://mp.weixin.qq.com/s/xyX4_CF5cveezEDuzFT13g"
 ---
 
 
