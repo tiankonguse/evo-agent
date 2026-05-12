@@ -31,6 +31,8 @@ func init() {
 	})
 }
 
+const maxReadBytes = 50000 // Hard cap on bytes returned by read_file
+
 // runReadFile reads the contents of a file.
 // limit ≤ 0 means no limit.
 func runReadFile(path string, limit int) (string, error) {
@@ -46,8 +48,8 @@ func runReadFile(path string, limit int) (string, error) {
 				fmt.Sprintf("\n... (%d more lines)", len(lines)-limit)
 		}
 	}
-	if len(text) > 50000 {
-		text = text[:50000]
+	if len(text) > maxReadBytes {
+		text = text[:maxReadBytes]
 	}
 	return text, nil
 }

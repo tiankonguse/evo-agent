@@ -6,10 +6,11 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 
 ## Features
 
-- **Multi-tool Support**: bash, read_file, write_file, edit_file — all self-registering via `init()`
+- **Multi-tool Support**: bash, read_file, write_file, edit_file, compact — all self-registering via `init()`
 - **Self-registering Tool Pattern**: Adding a new tool only requires a single new file; no central registration needed
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
 - **Multi-turn Reasoning**: Drives a loop of thought → action → observation until the model stops requesting tool calls
+- **Context Compaction**: Three-layer strategy (placeholder micro-compact → LLM summarization → model-initiated compact) to handle unlimited-length sessions
 - **Colored CLI**: Clear terminal output distinguishing thinking, tool calls, responses, and errors
 
 ## Project Structure
@@ -20,8 +21,10 @@ src/
 ├── go.mod
 └── internal/
     ├── agent/
-    │   ├── loop.go            # Agent struct, RunOneTurn, Loop
-    │   └── state.go           # LoopState (Messages, TurnCount, TransitionReason)
+    │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run (REPL)
+    │   ├── state.go           # LoopState, CompactState
+    │   ├── compact.go         # MicroCompact, CompactHistory, SummarizeHistory, TrackRecentFile
+    │   └── transcripts.go     # WriteTranscript: save full history to .evo_agent/transcripts/
     ├── config/
     │   └── config.go          # Config struct, LoadEnv, Load
     ├── tools/
@@ -30,7 +33,8 @@ src/
     │   ├── bash.go            # bash tool (run shell commands, 120s timeout)
     │   ├── read_file.go       # read_file tool (read file with optional line limit)
     │   ├── write_file.go      # write_file tool (write/create file with mkdir -p)
-    │   └── edit_file.go       # edit_file tool (exact-string replacement or create)
+    │   ├── edit_file.go       # edit_file tool (exact-string replacement or create)
+    │   └── compact.go         # compact tool (model-initiated context compaction)
     └── ui/
         └── terminal.go        # ANSI color helpers for terminal output
 ```
@@ -87,6 +91,7 @@ Type `q` or `exit` to quit.
 | `read_file`  | Read a file's contents with an optional line limit              |
 | `write_file` | Write (or overwrite) a file, creating parent directories        |
 | `edit_file`  | Replace an exact string in a file, or create a new file         |
+| `compact`    | Summarize the conversation history to free up context window; accepts an optional `focus` hint |
 
 ## Adding a New Tool
 
@@ -103,11 +108,13 @@ That's it — the tool is automatically available to the agent on next run.
 | [01-loop](blog/01-loop.md) | ReAct Loop — how the agent thinks, acts, and observes in a cycle |
 | [02-tools](blog/02-tools.md) | Tools — self-registering tool pattern and table-driven dispatch |
 | [03-prompts](blog/03-prompts.md) | Prompts & Context — system prompt, messages history, and the two-layer loop |
+| [04-compact](blog/04-compact.md) | Context Compaction — three-layer strategy for unlimited-length sessions |
 
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.4.0** | Add context compaction: `CompactState`, `MicroCompact`, `CompactHistory`, `WriteTranscript`, and `compact` tool; `loop.go` integrates automatic and model-initiated compaction |
 | **v0.3.0** | Refactor loop: move REPL into `loop.go` (`Run` method), add `TurnCount`/`TransitionReason` to `LoopState`, generate `SystemMsg` in `config.go` |
 | **v0.2.0** | Add `read_file`, `write_file`, `edit_file` tools; introduce self-registering `init()` pattern and table-driven tool dispatch |
 | **v0.1.0** | Initial release: ReAct loop + `bash` tool only |

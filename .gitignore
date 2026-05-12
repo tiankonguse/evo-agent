@@ -4,3 +4,8 @@ build/
 refs/
 .claude/
 prompts/
+.copilot-ut
+src/evo-agent
+.transcripts/
+.task_outputs/
+.evo_agent/

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Agent 的 Context：系统提示词与对话历史
+title: Agent 的记忆：提示词与对话历史
 description: LLM 本身是无状态的，它所知道的一切，全来自你每次传进去的那个 messages 数组。理解 Prompts 和对话历史，才能真正理解 Agent 是怎么"记住"事情的。
 keywords: 项目实践
 tags: [agent, prompts, golang]

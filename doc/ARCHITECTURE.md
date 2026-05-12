@@ -14,10 +14,34 @@ The `Agent` struct manages multi-turn conversations.
   - `Messages []anthropic.MessageParam` — full conversation history
   - `TurnCount int` — number of tool-call turns so far
   - `TransitionReason string` — why the loop continued (`"tool_result"`) or stopped (`""`)
+  - `CompactState *CompactState` — context compaction state (shared across REPL turns)
+- **`CompactState`** — tracks compaction across the session:
+  - `HasCompacted bool` — whether compaction has occurred at least once
+  - `LastSummary string` — text of the most recent generated summary
+  - `RecentFiles []string` — up to 5 most recently read files (FIFO)
+  - `CompactCount int` — total number of compactions performed
 - **`RunOneTurn`** — sends history to the LLM, appends the response, executes tool calls, returns `true` if another turn is needed
-- **`Loop`** — drives `RunOneTurn` in a `for` loop until it returns `false`
+- **`Loop`** — drives `RunOneTurn` in a `for` loop until it returns `false`; runs `MicroCompact` and `CompactHistory` before each LLM call
+- **`Run`** — top-level REPL: reads user input, maintains persistent `history` and `CompactState`, calls `Loop`
 
-### 2. Tool Engine (`internal/tools`)
+### 2. Context Compaction (`internal/agent/compact.go`, `transcripts.go`)
+
+A three-layer strategy to keep context size manageable across long sessions.
+
+| Layer | Trigger | Mechanism | Cost |
+|-------|---------|-----------|------|
+| **MicroCompact** | Every LLM call | Replace older tool results with a one-line placeholder; keep the most recent `KEEP_RECENT_RESULTS` (3) intact | < 1 ms, no network |
+| **CompactHistory** | Context > `CONTEXT_LIMIT` (50 000 chars) after MicroCompact | Write full transcript to disk, call LLM to generate a summary, replace all messages with one summary message | 1–5 s, one LLM call |
+| **compact tool** | Model calls `compact` tool | Same as CompactHistory; model may supply a `focus` hint that is appended to the summary | 1–5 s, one LLM call |
+
+Key functions:
+- **`MicroCompact(messages, keepCount)`** — in-place placeholder replacement
+- **`CompactHistory(client, model, messages, state, focus)`** — full summarisation + transcript write
+- **`SummarizeHistory(client, model, messages)`** — calls LLM to produce a structured summary
+- **`TrackRecentFile(state, path)`** — maintains `CompactState.RecentFiles` FIFO list
+- **`WriteTranscript(messages)`** — saves JSONL snapshot to `.evo_agent/transcripts/<timestamp>.jsonl`
+
+### 3. Tool Engine (`internal/tools`)
 
 A self-registering, table-driven tool system.
 
@@ -37,13 +61,14 @@ A self-registering, table-driven tool system.
 | `read_file`  | `read_file.go` | Reads a file; optional `limit` truncates to N lines        |
 | `write_file` | `write_file.go`| Writes content to a path, creating parent directories      |
 | `edit_file`  | `edit_file.go` | Replaces the first exact occurrence of `old_str` with `new_str`; creates file if `old_str` is empty |
+| `compact`    | `compact.go`   | Model-initiated context compaction; optional `focus` hint preserved in summary |
 
-### 3. Configuration (`internal/config`)
+### 4. Configuration (`internal/config`)
 
 - **`LoadEnv()`** — loads `.env` from the binary's directory first, then from CWD (CWD takes precedence)
 - **`Load()`** — reads `MODEL_ID`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` from the environment and builds the system prompt dynamically with the current working directory
 
-### 4. User Interface (`internal/ui`)
+### 5. User Interface (`internal/ui`)
 
 Provides ANSI-colored terminal output to separate different agent output types.
 
@@ -55,11 +80,10 @@ Provides ANSI-colored terminal output to separate different agent output types.
 | `PrintCommand`   | Yellow  | Tool call with arguments             |
 | `PrintError`     | Red     | Errors from tools or the API         |
 
-### 5. Entry Point (`main.go`)
+### 6. Entry Point (`main.go`)
 
 - Loads config, creates the Anthropic client and `Agent`
-- Maintains a persistent `history []anthropic.MessageParam` across prompts in the same session
-- Appends the user message to history, creates a fresh `LoopState`, calls `Loop`, then reads the final assistant message back out for display
+- Calls `agent.Run()` which manages the REPL loop, history, and compaction state internally
 
 ## Data Flow
 
@@ -67,25 +91,39 @@ Provides ANSI-colored terminal output to separate different agent output types.
 User Input
     │
     ▼
-main.go ──► Agent.Loop(state)
-                │
-                ▼
-          Agent.RunOneTurn(state)
-                │
-                ├──► Anthropic API  (system prompt + tools + history)
-                │         │
-                │         ▼
-                │    Response (TextBlock / ThinkingBlock / ToolUseBlock)
-                │         │
-                ▼         ▼
-          tools.Execute(content)
-                │
-                ├── PrintThinking / PrintText / PrintCommand
-                │
-                └──► tools.Dispatch(name, input)
-                            │
-                            ▼
-                      bash / read_file / write_file / edit_file
+Agent.Run()
+    │
+    ▼  (per REPL turn)
+Agent.Loop(state)
+        │
+        ▼
+  MicroCompact(messages)          ← replace older tool results with placeholders
+        │
+        ▼
+  EstimateContextSize > 50,000?
+        │ yes
+        ▼
+  CompactHistory(...)             ← write transcript + LLM summary → 1 message
+        │
+        ▼
+  Agent.RunOneTurn(state)
+        │
+        ├──► Anthropic API  (system prompt + tools + history)
+        │         │
+        │         ▼
+        │    Response (TextBlock / ThinkingBlock / ToolUseBlock)
+        │         │
+        ▼         ▼
+  tools.Execute(content)
+        │
+        ├── PrintThinking / PrintText / PrintCommand
+        │
+        └──► tools.Dispatch(name, input)
+                    │
+                    ├── bash / read_file / write_file / edit_file
+                    │         (read_file also calls TrackRecentFile)
+                    │
+                    └── compact → CompactHistory(focus=...)
                             │
                             ▼
                       ToolResult appended to history

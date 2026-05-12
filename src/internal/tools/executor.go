@@ -9,9 +9,12 @@ import (
 	"evo-agent/internal/ui"
 )
 
+const previewPrintLen = 200 // Max chars of a tool result printed to terminal
+
 // Execute iterates over a response's content blocks, prints output for each,
 // runs any tool calls via the registry, and returns the accumulated tool results.
-func Execute(content []anthropic.ContentBlockUnion) []anthropic.ContentBlockParamUnion {
+// compactState is passed as interface{} to avoid circular imports
+func Execute(content []anthropic.ContentBlockUnion, compactState interface{}) []anthropic.ContentBlockParamUnion {
 	var results []anthropic.ContentBlockParamUnion
 
 	for _, block := range content {
@@ -34,9 +37,10 @@ func Execute(content []anthropic.ContentBlockUnion) []anthropic.ContentBlockPara
 				isError = true
 				ui.PrintError(fmt.Sprintf("Error: %v", err))
 			} else {
+				output = persistLargeOutput(v.ID, output)
 				preview := output
-				if len(preview) > 200 {
-					preview = preview[:200]
+				if len(preview) > previewPrintLen {
+					preview = preview[:previewPrintLen]
 				}
 				fmt.Println(preview)
 			}
