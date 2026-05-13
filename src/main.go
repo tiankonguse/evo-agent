@@ -9,6 +9,7 @@ import (
 
 	"evo-agent/internal/agent"
 	"evo-agent/internal/config"
+	"evo-agent/internal/tools"
 )
 
 func BuildOptions(cfg *config.Config) []option.RequestOption {
@@ -36,6 +37,13 @@ func main() {
 
 	opts := BuildOptions(cfg)
 	client := anthropic.NewClient(opts...)
+
+	tools.InitMCP()
+	defer tools.ShutdownMCP()
+
+	// 打印工具列表
+	tools.PrintToolList()
+
 	a := agent.New(&client, cfg)
 	a.Run(os.Stdin)
 }

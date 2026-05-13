@@ -11,13 +11,14 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
 - **Multi-turn Reasoning**: Drives a loop of thought → action → observation until the model stops requesting tool calls
 - **Context Compaction**: Three-layer strategy (placeholder micro-compact → LLM summarization → model-initiated compact) to handle unlimited-length sessions
+- **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo_agent/mcp.json`
 - **Colored CLI**: Clear terminal output distinguishing thinking, tool calls, responses, and errors
 
 ## Project Structure
 
 ```
 src/
-├── main.go                    # Entry point: input loop, history management
+├── main.go                    # Entry point: input loop, history management, MCP init/shutdown
 ├── go.mod
 └── internal/
     ├── agent/
@@ -30,6 +31,7 @@ src/
     ├── tools/
     │   ├── tool.go            # ToolDef registry, Register, Tools, Dispatch, GenerateSchema
     │   ├── executor.go        # Execute: iterate content blocks, run tool calls
+    │   ├── mcp.go             # MCP client: stdio / sse / streamableHttp transports, InitMCP, ShutdownMCP
     │   ├── bash.go            # bash tool (run shell commands, 120s timeout)
     │   ├── read_file.go       # read_file tool (read file with optional line limit)
     │   ├── write_file.go      # write_file tool (write/create file with mkdir -p)
@@ -85,6 +87,8 @@ Type `q` or `exit` to quit.
 
 ## Tools
 
+### Built-in Tools
+
 | Tool         | Description                                                     |
 |--------------|-----------------------------------------------------------------|
 | `bash`       | Run any shell command (timeout: 120s, max output: 50 000 chars) |
@@ -92,6 +96,44 @@ Type `q` or `exit` to quit.
 | `write_file` | Write (or overwrite) a file, creating parent directories        |
 | `edit_file`  | Replace an exact string in a file, or create a new file         |
 | `compact`    | Summarize the conversation history to free up context window; accepts an optional `focus` hint |
+
+### MCP Tools
+
+MCP tools are loaded automatically at startup from `.evo_agent/mcp.json`. Each tool is exposed to the model with a prefixed name: `mcp__{server}__{tool}`.
+
+Configure servers in `.evo_agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "my_server": {
+      "type": "streamableHttp",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      },
+      "disabled": false,
+      "timeout": 30
+    },
+    "local_fs": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}
+```
+
+| Field       | Type    | Description                                           |
+|-------------|---------|-------------------------------------------------------|
+| `type`      | string  | Transport: `"stdio"`, `"sse"`, or `"streamableHttp"` |
+| `disabled`  | boolean | Skip this server at startup (default: `false`)        |
+| `timeout`   | integer | Request timeout in seconds (default: `30`)            |
+| `command`   | string  | *(stdio only)* Subprocess command                     |
+| `args`      | array   | *(stdio only)* Command-line arguments                 |
+| `env`       | object  | *(stdio only)* Extra environment variables            |
+| `url`       | string  | *(sse/streamableHttp)* Remote server URL              |
+| `headers`   | object  | *(sse/streamableHttp)* Custom HTTP request headers    |
 
 ## Adding a New Tool
 
@@ -114,6 +156,7 @@ That's it — the tool is automatically available to the agent on next run.
 
 | Version | Description |
 |---------|-------------|
+| **v0.5.0** | Add MCP client support: `stdio`, `sse`, and `streamableHttp` transports; config from `.evo_agent/mcp.json`; `InitMCP`/`ShutdownMCP` in `main.go`; MCP tools auto-merged into `Tools()` and routed in `Dispatch()` |
 | **v0.4.0** | Add context compaction: `CompactState`, `MicroCompact`, `CompactHistory`, `WriteTranscript`, and `compact` tool; `loop.go` integrates automatic and model-initiated compaction |
 | **v0.3.0** | Refactor loop: move REPL into `loop.go` (`Run` method), add `TurnCount`/`TransitionReason` to `LoopState`, generate `SystemMsg` in `config.go` |
 | **v0.2.0** | Add `read_file`, `write_file`, `edit_file` tools; introduce self-registering `init()` pattern and table-driven tool dispatch |

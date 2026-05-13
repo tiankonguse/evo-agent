@@ -172,13 +172,17 @@ Adds a `ToolDef` to the global registry. Call this from a tool file's `init()` f
 
 ### `func Tools() []anthropic.ToolUnionParam`
 
-Returns all registered tool schemas, ready to pass to the Anthropic API.
+Returns all registered tool schemas plus MCP tool schemas, ready to pass to the Anthropic API. Native tools come first, followed by MCP tools (prefixed `mcp__{server}__{tool}`).
 
 ---
 
 ### `func Dispatch(name string, input json.RawMessage) (string, error)`
 
-Looks up `name` in the registry and calls its handler with `input`. Returns `("", nil)` if the tool is not found.
+Routes the call to the correct handler:
+- Names prefixed `mcp__` are forwarded to `DispatchMCP`.
+- All other names are looked up in the native tool registry.
+
+Returns `("", nil)` if the tool is not found.
 
 ---
 
@@ -271,6 +275,93 @@ type CompactInput struct {
 Model-initiated context compaction. The handler returns a placeholder string; actual compaction is performed by `loop.go` after detecting the `compact` tool call in the response.
 
 `focus` — optional hint describing what information must be preserved in the generated summary.
+
+---
+
+## internal/tools — MCP
+
+### `type MCPServerConfig struct`
+
+```go
+type MCPServerConfig struct {
+    Type        string            `json:"type"`
+    Disabled    bool              `json:"disabled"`
+    Timeout     int               `json:"timeout"`
+    Description string            `json:"description"`
+    Command     string            `json:"command"`
+    Args        []string          `json:"args"`
+    Env         map[string]string `json:"env"`
+    URL         string            `json:"url"`
+    Headers     map[string]string `json:"headers"`
+}
+```
+
+| Field         | Description                                                          |
+|---------------|----------------------------------------------------------------------|
+| `Type`        | Transport: `"stdio"`, `"sse"`, or `"streamableHttp"` (required)     |
+| `Disabled`    | Skip this server at startup                                          |
+| `Timeout`     | Request timeout in seconds (default 30)                              |
+| `Command`     | *(stdio)* Subprocess command                                         |
+| `Args`        | *(stdio)* Command-line arguments                                     |
+| `Env`         | *(stdio)* Extra environment variables overlaid on the current env    |
+| `URL`         | *(sse/streamableHttp)* Remote server URL                             |
+| `Headers`     | *(sse/streamableHttp)* Custom HTTP request headers                   |
+
+---
+
+### `type MCPConfig struct`
+
+```go
+type MCPConfig struct {
+    MCPServers map[string]MCPServerConfig `json:"mcpServers"`
+}
+```
+
+Top-level structure of `.evo_agent/mcp.json`.
+
+---
+
+### `func InitMCP()`
+
+Reads `.evo_agent/mcp.json`, connects to each enabled server using the appropriate transport, and caches the client in the package-level `mcpServers` map. Missing config file is silently ignored. Prints `[MCP] Connected to "name" (N tools)` for each successful connection.
+
+---
+
+### `func ShutdownMCP()`
+
+Calls `stop()` on all connected MCP clients. Should be called via `defer` in `main()`.
+
+---
+
+### `func MCPTools() []anthropic.ToolUnionParam`
+
+Returns Anthropic tool schemas for all tools exposed by connected MCP servers. Each tool name is prefixed as `mcp__{serverName}__{toolName}`.
+
+---
+
+### `func DispatchMCP(name string, input json.RawMessage) (string, error)`
+
+Parses the `mcp__{server}__{tool}` prefix from `name`, looks up the server in `mcpServers`, and calls `callTool(toolName, input)` on the matching client.
+
+---
+
+### `mcpClient` interface
+
+```go
+type mcpClient interface {
+    getTools() []mcpToolSpec
+    callTool(toolName string, arguments json.RawMessage) (string, error)
+    stop()
+}
+```
+
+Implemented by three transport types:
+
+| Type               | Struct              | Transport mechanism                                             |
+|--------------------|---------------------|-----------------------------------------------------------------|
+| `stdio`            | `mcpProcess`        | Subprocess pipes; line-delimited JSON-RPC                       |
+| `streamableHttp`   | `mcpHTTPClient`     | Stateless POST; response auto-detected as JSON or SSE           |
+| `sse`              | `mcpSSEClient`      | Persistent GET SSE stream + POST; background goroutine for routing |
 
 ---
 

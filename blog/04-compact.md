@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Evo Agent：三层上下文压缩策略
+title: Agent的上下文压缩：3个策略
 description: messages 越滚越大，context window 撑不住了怎么办？本文梳理业界主流的上下文压缩方案，再看 evo-agent 如何用三层策略让 Agent 无限续航。
 keywords: 项目实践
 tags: [agent, context, compact, golang]
@@ -14,7 +14,7 @@ source: "https://mp.weixin.qq.com/s/YRS29wRckEmFgNb0eJrxrQ"
 ![截图](https://res2026.tiankonguse.com/images/2026/05/12/007.png)
 
 
-前三篇文章分别讲了 Agent 的 [Loop](https://mp.weixin.qq.com/s/dkdrwVlwe3IkH2hzSzy53A)、[Tools](https://mp.weixin.qq.com/s/xyX4_CF5cveezEDuzFT13g) 和 [Prompts](https://mp.weixin.qq.com/s/lguRAdxFoN22rqPyx3BIzw)。  
+前三篇文章分别讲了 Agent 的 [Loop](https://mp.weixin.qq.com/s/dkdrwVlwe3IkH2hzSzy53A)、[Tools](https://mp.weixin.qq.com/s/xyX4_CF5cveezEDuzFT13g) 和 [记忆](https://mp.weixin.qq.com/s/lguRAdxFoN22rqPyx3BIzw)。  
 
 
 这篇聊一个迟早得正面面对的问题。  

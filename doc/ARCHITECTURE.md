@@ -48,8 +48,8 @@ A self-registering, table-driven tool system.
 - **`ToolDef`** — bundles an `anthropic.ToolParam` schema with a `Handler` func
 - **`registry`** — a `map[string]ToolDef` populated at startup via `init()` functions
 - **`Register(def ToolDef)`** — called from each tool file's `init()`; no central list needed
-- **`Tools()`** — returns all registered schemas as `[]anthropic.ToolUnionParam` for the API call
-- **`Dispatch(name, input)`** — looks up and calls the handler for a given tool name
+- **`Tools()`** — returns all registered schemas plus MCP tool schemas as `[]anthropic.ToolUnionParam` for the API call
+- **`Dispatch(name, input)`** — routes `mcp__*` names to `DispatchMCP`; otherwise looks up the handler in the registry
 - **`GenerateSchema[T]()`** — reflects a Go struct into `anthropic.ToolInputSchemaParam` using `invopop/jsonschema`
 - **`Execute(content)`** — iterates API response content blocks, prints output, calls `Dispatch` for each `ToolUseBlock`, returns `[]ContentBlockParamUnion` tool results
 
@@ -63,12 +63,41 @@ A self-registering, table-driven tool system.
 | `edit_file`  | `edit_file.go` | Replaces the first exact occurrence of `old_str` with `new_str`; creates file if `old_str` is empty |
 | `compact`    | `compact.go`   | Model-initiated context compaction; optional `focus` hint preserved in summary |
 
-### 4. Configuration (`internal/config`)
+### 4. MCP Client (`internal/tools/mcp.go`)
+
+Connects to external MCP (Model Context Protocol) tool servers at startup. Config is loaded from `.evo_agent/mcp.json` (missing file is silently ignored).
+
+**Transports:**
+
+| Type            | Connection model                                                                 |
+|-----------------|---------------------------------------------------------------------------------|
+| `stdio`         | Spawns a subprocess; communicates via line-delimited JSON-RPC over stdin/stdout |
+| `streamableHttp`| Stateless POST per request; response may be JSON or SSE                         |
+| `sse`           | Persistent GET SSE stream for responses; POST endpoint received in `endpoint` event |
+
+**Interface:**
+```go
+type mcpClient interface {
+    getTools() []mcpToolSpec
+    callTool(toolName string, arguments json.RawMessage) (string, error)
+    stop()
+}
+```
+
+**Key functions:**
+- **`InitMCP()`** — reads config, connects to each enabled server, prints `[MCP] Connected to "name" (N tools)`
+- **`ShutdownMCP()`** — calls `stop()` on all clients (called via `defer` in `main.go`)
+- **`MCPTools()`** — returns Anthropic tool schemas for all MCP tools, prefixed `mcp__{server}__{tool}`
+- **`DispatchMCP(name, input)`** — parses the prefix, routes to the correct server's `callTool`
+
+**Tool name convention:** `mcp__{serverName}__{toolName}`
+
+### 5. Configuration (`internal/config`)
 
 - **`LoadEnv()`** — loads `.env` from the binary's directory first, then from CWD (CWD takes precedence)
 - **`Load()`** — reads `MODEL_ID`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` from the environment and builds the system prompt dynamically with the current working directory
 
-### 5. User Interface (`internal/ui`)
+### 6. User Interface (`internal/ui`)
 
 Provides ANSI-colored terminal output to separate different agent output types.
 
@@ -80,10 +109,11 @@ Provides ANSI-colored terminal output to separate different agent output types.
 | `PrintCommand`   | Yellow  | Tool call with arguments             |
 | `PrintError`     | Red     | Errors from tools or the API         |
 
-### 6. Entry Point (`main.go`)
+### 7. Entry Point (`main.go`)
 
-- Loads config, creates the Anthropic client and `Agent`
-- Calls `agent.Run()` which manages the REPL loop, history, and compaction state internally
+- Loads config, creates the Anthropic client
+- Calls `tools.InitMCP()` to connect MCP servers; defers `tools.ShutdownMCP()`
+- Creates `Agent` and calls `agent.Run()` which manages the REPL loop, history, and compaction state internally
 
 ## Data Flow
 
@@ -119,6 +149,8 @@ Agent.Loop(state)
         ├── PrintThinking / PrintText / PrintCommand
         │
         └──► tools.Dispatch(name, input)
+                    │
+                    ├── mcp__* → DispatchMCP → mcpClient.callTool
                     │
                     ├── bash / read_file / write_file / edit_file
                     │         (read_file also calls TrackRecentFile)
