@@ -278,9 +278,87 @@ Model-initiated context compaction. The handler returns a placeholder string; ac
 
 ---
 
-## internal/tools — MCP
+### Tool: `load_skill`
 
-### `type MCPServerConfig struct`
+```go
+type loadSkillInput struct {
+    Name string `json:"name"`
+}
+```
+
+Loads the full body of the named skill from the skill registry. Returns the skill body wrapped in an XML tag with the skill's name and absolute file path:
+
+```xml
+<skill name="git-commit" path="/workspace/.evo_agent/skill/git-commit/SKILL.md">
+...body...
+</skill>
+```
+
+Returns a human-readable error string (containing `"Error"`) when the skill name is not found, along with the list of known skill names.
+
+---
+
+## internal/skills
+
+### `type SkillManifest struct`
+
+```go
+type SkillManifest struct {
+    Name        string
+    Description string
+}
+```
+
+Lightweight metadata for a single skill, kept in memory for fast catalog generation.
+
+| Field         | Type     | Description                                  |
+|---------------|----------|----------------------------------------------|
+| `Name`        | `string` | Skill identifier used with `load_skill`      |
+| `Description` | `string` | One-line summary shown in the system prompt  |
+
+---
+
+### `func Init()`
+
+Scans `.evo_agent/skill/**/SKILL.md` in the current working directory. For each file found:
+
+1. Reads and parses YAML frontmatter (`name`, `description`).
+2. Falls back to the parent directory name if `name` is absent.
+3. Resolves the absolute path via `filepath.Abs`.
+4. Stores the document in the package-level `documents` map.
+
+Missing skill directory is silently ignored (consistent with MCP config behaviour). Prints `[Skills] Loaded N skill(s)` when at least one skill is found.
+
+---
+
+### `func Catalog() string`
+
+Returns a formatted, alphabetically sorted list of all loaded skills:
+
+```
+- git-commit: Best practices for writing git commit messages
+- python-style: PEP 8 and idiomatic Python conventions
+```
+
+Returns `""` when no skills are loaded. Used by `main.go` to inject the catalog into the system prompt.
+
+---
+
+### `func Load(name string) string`
+
+Returns the full skill body wrapped in an XML tag, ready to inject into context:
+
+```xml
+<skill name="git-commit" path="/workspace/.evo_agent/skill/git-commit/SKILL.md">
+...body...
+</skill>
+```
+
+Returns a human-readable error string (beginning with `"Error"`) when the skill name is unknown, including the list of available skill names.
+
+---
+
+## internal/tools — MCP
 
 ```go
 type MCPServerConfig struct {

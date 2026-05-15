@@ -9,6 +9,7 @@ import (
 
 	"evo-agent/internal/agent"
 	"evo-agent/internal/config"
+	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 )
 
@@ -40,6 +41,13 @@ func main() {
 
 	tools.InitMCP()
 	defer tools.ShutdownMCP()
+
+	// Load skills and inject catalog into system prompt
+	skills.Init()
+	if catalog := skills.Catalog(); catalog != "" {
+		cfg.SystemMsg += "\nSkills available:\n" + catalog +
+			"\nUse load_skill when a task needs specialized instructions before you act."
+	}
 
 	// 打印工具列表
 	tools.PrintToolList()

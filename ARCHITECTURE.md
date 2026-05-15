@@ -62,8 +62,30 @@ A self-registering, table-driven tool system.
 | `write_file` | `write_file.go`| Writes content to a path, creating parent directories      |
 | `edit_file`  | `edit_file.go` | Replaces the first exact occurrence of `old_str` with `new_str`; creates file if `old_str` is empty |
 | `compact`    | `compact.go`   | Model-initiated context compaction; optional `focus` hint preserved in summary |
+| `load_skill` | `skill.go`     | Loads the full body of a named skill; returns XML-wrapped content with the skill's file path |
 
-### 4. MCP Client (`internal/tools/mcp.go`)
+### 4. Skill System (`internal/skills`)
+
+A two-layer on-demand knowledge model that keeps the system prompt small.
+
+- **`SkillManifest`** — lightweight metadata kept in memory: `Name`, `Description`
+- **`skillDocument`** — full document: `Manifest`, `Body` (trimmed), `Path` (absolute path to `SKILL.md`)
+- **`Init()`** — walks `.evo_agent/skill/**/SKILL.md` at startup; parses YAML frontmatter; populates the package-level `documents` map; missing directory silently ignored
+- **`Catalog() string`** — returns a `"- name: description\n"` list for every loaded skill, sorted by name; returns `""` when no skills are loaded
+- **`Load(name) string`** — returns `<skill name=… path=…>\nbody\n</skill>`; returns a human-readable error with available names when the skill is unknown
+- **`parseFrontmatter(text)`** — extracts YAML front matter delimited by `---` using a compiled regexp; key–value pairs separated by `:` on each line
+
+**Skill file layout:**
+
+```
+.evo_agent/skill/
+└── <skill-name>/
+    └── SKILL.md      # frontmatter (name, description) + body
+```
+
+**Import direction:** `main.go` → `internal/skills`; `internal/tools/skill.go` → `internal/skills`. The `skills` package imports nothing from `tools` — no circular dependency.
+
+### 5. MCP Client (`internal/tools/mcp.go`)
 
 Connects to external MCP (Model Context Protocol) tool servers at startup. Config is loaded from `.evo_agent/mcp.json` (missing file is silently ignored).
 
@@ -92,12 +114,12 @@ type mcpClient interface {
 
 **Tool name convention:** `mcp__{serverName}__{toolName}`
 
-### 5. Configuration (`internal/config`)
+### 6. Configuration (`internal/config`)
 
 - **`LoadEnv()`** — loads `.env` from the binary's directory first, then from CWD (CWD takes precedence)
 - **`Load()`** — reads `MODEL_ID`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` from the environment and builds the system prompt dynamically with the current working directory
 
-### 6. User Interface (`internal/ui`)
+### 7. User Interface (`internal/ui`)
 
 Provides ANSI-colored terminal output to separate different agent output types.
 
@@ -109,10 +131,11 @@ Provides ANSI-colored terminal output to separate different agent output types.
 | `PrintCommand`   | Yellow  | Tool call with arguments             |
 | `PrintError`     | Red     | Errors from tools or the API         |
 
-### 7. Entry Point (`main.go`)
+### 8. Entry Point (`main.go`)
 
 - Loads config, creates the Anthropic client
 - Calls `tools.InitMCP()` to connect MCP servers; defers `tools.ShutdownMCP()`
+- Calls `skills.Init()` to scan `.evo_agent/skill/`; appends the skill catalog to `cfg.SystemMsg` if any skills are found
 - Creates `Agent` and calls `agent.Run()` which manages the REPL loop, history, and compaction state internally
 
 ## Data Flow
@@ -154,6 +177,8 @@ Agent.Loop(state)
                     │
                     ├── bash / read_file / write_file / edit_file
                     │         (read_file also calls TrackRecentFile)
+                    │
+                    ├── load_skill → skills.Load(name)
                     │
                     └── compact → CompactHistory(focus=...)
                             │
