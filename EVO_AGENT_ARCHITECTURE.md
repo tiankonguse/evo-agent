@@ -39,7 +39,7 @@ src/
     ├── ui/
     │   └── terminal.go              # Basic terminal output with ANSI colors
     └── skills/
-        ├── registry.go              # Skill loader from .evo_agent/skill/**
+        ├── registry.go              # Skill loader from .evo-agent/skill/**
         └── registry_test.go
 ```
 
@@ -53,8 +53,8 @@ main()
   ├─ config.LoadEnv()                    // Load .env files (binary dir, then cwd)
   ├─ cfg := config.Load()                // Read MODEL_ID, API_KEY, BASE_URL, set SystemMsg
   ├─ client := anthropic.NewClient(...)  // Create Anthropic client
-  ├─ tools.InitMCP()                     // Connect to MCP servers from .evo_agent/mcp.json
-  ├─ skills.Init()                       // Scan .evo_agent/skill/**/SKILL.md
+  ├─ tools.InitMCP()                     // Connect to MCP servers from .evo-agent/mcp.json
+  ├─ skills.Init()                       // Scan .evo-agent/skill/**/SKILL.md
   ├─ cfg.SystemMsg += skills.Catalog()   // Inject skill list into system prompt
   ├─ tools.PrintToolList()               // Debug output
   └─ a.Run(os.Stdin)                     // Start REPL
@@ -170,7 +170,7 @@ Execute(content []ContentBlockUnion) []ContentBlockParamUnion
   │   └─ ToolUseBlock:
   │       ├─ ui.PrintToolCall()
   │       ├─ Dispatch(name, input)  // Route to handler or MCP
-  │       ├─ persistLargeOutput()   // Save >30KB to .evo_agent/tool-results/
+  │       ├─ persistLargeOutput()   // Save >30KB to .evo-agent/tool-results/
   │       ├─ ui.PrintCommand()
   │       └─ Append ToolResultBlock to results
   └─ Return results for next message
@@ -178,7 +178,7 @@ Execute(content []ContentBlockUnion) []ContentBlockParamUnion
 
 ### Output Persistence (`persist.go`)
 - If tool output > 30KB:
-  - Save to `.evo_agent/tool-results/{toolID}.txt`
+  - Save to `.evo-agent/tool-results/{toolID}.txt`
   - Return preview (first 2000 chars) + pointer
   - Prevents context bloat
 
@@ -192,7 +192,7 @@ Execute(content []ContentBlockUnion) []ContentBlockParamUnion
 3. **sse**: `url` (persistent SSE connection + POST for requests)
 
 ### Configuration
-Loaded from `.evo_agent/mcp.json`:
+Loaded from `.evo-agent/mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -213,7 +213,7 @@ Loaded from `.evo_agent/mcp.json`:
 ### Connection Flow
 ```
 InitMCP()
-  ├─ Read .evo_agent/mcp.json (silently ignored if missing)
+  ├─ Read .evo-agent/mcp.json (silently ignored if missing)
   ├─ For each enabled server:
   │   ├─ Start process or connect HTTP
   │   ├─ Call "initialize" JSON-RPC
@@ -241,7 +241,7 @@ DispatchMCP(name, input)
 ## 6. Skills System (`skills/registry.go`)
 
 ### Loading
-- Scans `.evo_agent/skill/**/SKILL.md`
+- Scans `.evo-agent/skill/**/SKILL.md`
 - Extracts YAML frontmatter: `name`, `description`
 - Stores full body for injection
 

@@ -370,7 +370,7 @@ sequenceDiagram
     participant LLM as LLM API
 
     AgentLoop->>Compact: CompactHistory(messages)
-    Compact->>Transcript: WriteTranscript(messages) → .evo_agent/transcripts/
+    Compact->>Transcript: WriteTranscript(messages) → .evo-agent/transcripts/
     Compact->>LLM: "请压缩这段对话..."
     LLM-->>Compact: [摘要文本]
     Compact->>Compact: 追加 RecentFiles 到摘要

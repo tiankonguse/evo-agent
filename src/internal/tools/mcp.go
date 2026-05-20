@@ -16,7 +16,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 )
 
-// ---------- Config structs (matches .evo_agent/mcp.json + mcp-schema.json) ----------
+// ---------- Config structs (matches .evo-agent/mcp.json + mcp-schema.json) ----------
 
 // MCPServerConfig holds the parameters for one MCP server entry.
 type MCPServerConfig struct {
@@ -38,7 +38,7 @@ type MCPServerConfig struct {
 	Headers map[string]string `json:"headers"`
 }
 
-// MCPConfig is the top-level structure of .evo_agent/mcp.json.
+// MCPConfig is the top-level structure of .evo-agent/mcp.json.
 type MCPConfig struct {
 	MCPServers map[string]MCPServerConfig `json:"mcpServers"`
 }
@@ -589,17 +589,17 @@ func extractTextContent(result json.RawMessage) string {
 
 var mcpServers = map[string]mcpClient{}
 
-// InitMCP loads .evo_agent/mcp.json and connects to all enabled servers.
+// InitMCP loads .evo-agent/mcp.json and connects to all enabled servers.
 // Missing config file is silently ignored.
 func InitMCP() {
-	data, err := os.ReadFile(".evo_agent/mcp.json")
+	data, err := os.ReadFile(".evo-agent/mcp.json")
 	if err != nil {
 		return
 	}
 
 	var cfg MCPConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "[MCP] Failed to parse .evo_agent/mcp.json: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[MCP] Failed to parse .evo-agent/mcp.json: %v\n", err)
 		return
 	}
 

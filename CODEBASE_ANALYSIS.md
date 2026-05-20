@@ -45,7 +45,7 @@ evo-agent/
 │       │   └── config.go                 # Load .env, API keys, model ID
 │       └── ui/                           # Terminal output (ANSI colors)
 │           └── terminal.go               # Print* functions
-├── .evo_agent/                           # Agent state directory
+├── .evo-agent/                           # Agent state directory
 │   ├── mcp.json                          # MCP server configurations
 │   ├── skill/                            # Skill definitions (.md files)
 │   ├── tool-results/                     # Persisted large tool outputs
@@ -64,8 +64,8 @@ evo-agent/
 │                    main.go                           │
 │  1. Load .env (MODEL_ID, ANTHROPIC_API_KEY)         │
 │  2. Initialize Anthropic SDK client                 │
-│  3. Load MCP servers from .evo_agent/mcp.json       │
-│  4. Load skills from .evo_agent/skill/SKILL.md      │
+│  3. Load MCP servers from .evo-agent/mcp.json       │
+│  4. Load skills from .evo-agent/skill/SKILL.md      │
 │  5. Create Agent instance                           │
 │  6. Call Agent.Run(os.Stdin) ← REPL start           │
 └──────────────────────────────────────────────────────┘
@@ -199,7 +199,7 @@ func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
 
 - **Small outputs** (≤30KB): Returned in-memory
 - **Large outputs** (>30KB): 
-  - Persisted to `.evo_agent/tool-results/{toolID}.txt`
+  - Persisted to `.evo-agent/tool-results/{toolID}.txt`
   - Returns placeholder with file path + 2KB preview
   - Model can re-run tool if full detail needed
 
@@ -209,7 +209,7 @@ func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
 
 ### MCP Configuration
 
-Loaded from `.evo_agent/mcp.json`:
+Loaded from `.evo-agent/mcp.json`:
 
 ```json
 {
@@ -257,7 +257,7 @@ Example: `mcp__filesystem__read_file` → calls `read_file` on `filesystem` serv
 
 ```
 InitMCP() calls:
-  1. Read .evo_agent/mcp.json
+  1. Read .evo-agent/mcp.json
   2. For each enabled server:
      a. Connect via transport (stdio/SSE/HTTP)
      b. Send initialize RPC with protocol version "2024-11-05"
@@ -275,10 +275,10 @@ InitMCP() calls:
 
 ### Skill Discovery & Loading
 
-Loaded from `.evo_agent/skill/*/SKILL.md`:
+Loaded from `.evo-agent/skill/*/SKILL.md`:
 
 ```
-.evo_agent/skill/
+.evo-agent/skill/
 ├── my-skill/
 │   └── SKILL.md              ← Parsed for frontmatter + body
 └── another-skill/
@@ -301,7 +301,7 @@ description: "Brief description"
 
 ```go
 func Init() {
-    // Walk .evo_agent/skill/**/SKILL.md
+    // Walk .evo-agent/skill/**/SKILL.md
     // Parse frontmatter (YAML) + body
     // Store in documents map
 }
@@ -377,7 +377,7 @@ const (
 
 ### Message History Persistence
 
-**File**: `.evo_agent/transcripts/transcript_{timestamp}.jsonl`
+**File**: `.evo-agent/transcripts/transcript_{timestamp}.jsonl`
 
 ```go
 func WriteTranscript(messages []anthropic.MessageParam) {
@@ -396,7 +396,7 @@ func LoadTranscript(path string) ([]anthropic.MessageParam, error) {
 
 ### Large Output Persistence
 
-**Directory**: `.evo_agent/tool-results/`
+**Directory**: `.evo-agent/tool-results/`
 
 - Tool results > 30KB saved to disk
 - File named: `{toolUseID}.txt`

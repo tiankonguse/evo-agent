@@ -11,7 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 )
 
-const TRANSCRIPT_DIR = ".evo_agent/transcripts"
+const TRANSCRIPT_DIR = ".evo-agent/transcripts"
 
 // WriteTranscript saves message history to a timestamped JSONL file.
 func WriteTranscript(messages []anthropic.MessageParam) error {

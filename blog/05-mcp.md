@@ -252,7 +252,7 @@ evo-agent 目前已经实现了四个核心模块：**Loop**（Agent 主循环�
 ### 5.1 配置文件
 
 
-MCP Server 的配置统一放在 `.evo_agent/mcp.json` 里：
+MCP Server 的配置统一放在 `.evo-agent/mcp.json` 里：
 
 
 ```json
@@ -367,7 +367,7 @@ sequenceDiagram
     participant Server as MCP Server
 
     Main->>InitMCP: tools.InitMCP()
-    InitMCP->>InitMCP: 读取 .evo_agent/mcp.json
+    InitMCP->>InitMCP: 读取 .evo-agent/mcp.json
     loop 每个启用的 Server
         InitMCP->>Server: initialize 握手
         Server-->>InitMCP: 握手成功
@@ -508,7 +508,7 @@ evo-agent 的 MCP 实现做了三件事：
 **无缝融合**——MCP 工具和内置工具在 `tools.Tools()` 里合并，LLM 看不出区别，Agent Loop 也不需要做任何特殊处理。
 
 
-接入一个新的 MCP Server，只需要在 `.evo_agent/mcp.json` 里加几行配置，重启就生效。
+接入一个新的 MCP Server，只需要在 `.evo-agent/mcp.json` 里加几行配置，重启就生效。
 
 
 对 Agent 来说，工具的边界消失了。

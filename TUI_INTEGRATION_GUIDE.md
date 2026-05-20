@@ -519,8 +519,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 ```bash
 ./evo-agent --tui --verbose
 
-# Logs go to .evo_agent/tui.log
-tail -f .evo_agent/tui.log
+# Logs go to .evo-agent/tui.log
+tail -f .evo-agent/tui.log
 ```
 
 ### Inspect agent state

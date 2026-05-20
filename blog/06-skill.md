@@ -218,7 +218,7 @@ sequenceDiagram
 **先说 Skill 文件长什么样。**  
 
 
-每个 Skill 就是一个 `SKILL.md` 文件，放在 `.evo_agent/skill/<技能名>/` 目录下。  
+每个 Skill 就是一个 `SKILL.md` 文件，放在 `.evo-agent/skill/<技能名>/` 目录下。  
 
 
 文件头是 YAML frontmatter，声明元数据：  
@@ -252,7 +252,7 @@ frontmatter 下面就是完整的执行指导——每一步该调什么工具�
 
 ```go
 func Init() {
-    skillsDir := filepath.Join(".evo_agent", "skill")
+    skillsDir := filepath.Join(".evo-agent", "skill")
     filepath.WalkDir(skillsDir, func(path string, d os.DirEntry, err error) error {
         if d.Name() != "SKILL.md" {
             return nil

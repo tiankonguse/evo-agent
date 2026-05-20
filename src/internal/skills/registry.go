@@ -29,10 +29,10 @@ var (
 	documents = map[string]skillDocument{}
 )
 
-// Init scans .evo_agent/skill/**/SKILL.md and loads all skills.
+// Init scans .evo-agent/skill/**/SKILL.md and loads all skills.
 // Missing directory is silently ignored (consistent with MCP config behaviour).
 func Init() {
-	skillsDir := filepath.Join(".evo_agent", "skill")
+	skillsDir := filepath.Join(".evo-agent", "skill")
 	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
 		return
 	}

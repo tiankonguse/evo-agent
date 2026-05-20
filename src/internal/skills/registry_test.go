@@ -35,7 +35,7 @@ func TestParseFrontmatterNoFrontmatter(t *testing.T) {
 func TestInitCatalogLoad(t *testing.T) {
 	// Set up a temp skill directory
 	dir := t.TempDir()
-	skillDir := filepath.Join(dir, ".evo_agent", "skill", "my-skill")
+	skillDir := filepath.Join(dir, ".evo-agent", "skill", "my-skill")
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestInitCatalogLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Change working directory to temp dir so Init() finds .evo_agent/skill/
+	// Change working directory to temp dir so Init() finds .evo-agent/skill/
 	orig, _ := os.Getwd()
 	if err := os.Chdir(dir); err != nil {
 		t.Fatal(err)

@@ -60,7 +60,7 @@
 3. **容错机制**
    - 大输出持久化失败自动降级
    - MCP 连接失败继续运行
-   - 缺失 .evo_agent/mcp.json 不致命
+   - 缺失 .evo-agent/mcp.json 不致命
 
 4. **性能意识**
    - Token 限制 (8000 per request)
@@ -96,7 +96,7 @@
 2. Load()              → 读环境变量到 Config
 3. BuildOptions()      → 构建 API 客户端选项
 4. anthropic.NewClient() → 创建 API 客户端
-5. InitMCP()           → 读 .evo_agent/mcp.json, 连接所有 MCP 服务
+5. InitMCP()           → 读 .evo-agent/mcp.json, 连接所有 MCP 服务
 6. PrintToolList()     → 打印已加载的工具
 7. agent.New()         → 创建 Agent 实例
 8. agent.Run(stdin)    → 启动 REPL
@@ -152,7 +152,7 @@ Execute(resp.Content):
       
       output = persistLargeOutput(output)
         if len(output) > 30KB:
-          → save to .evo_agent/tool-results/{id}.txt
+          → save to .evo-agent/tool-results/{id}.txt
           → return placeholder
       
       append ToolResultBlock(id, output, isError)
@@ -173,7 +173,7 @@ if EstimateContextSize(messages) > 50000:
 ```
 if resp contains block{Type:"tool_use", Name:"compact"}:
   focus = block.Input["focus"]
-  WriteTranscript(messages)  → .evo_agent/transcripts/
+  WriteTranscript(messages)  → .evo-agent/transcripts/
   summary = SummarizeHistory(messages)
   messages = [UserMessage("...\n\n" + summary + focus_hint)]
 ```
@@ -258,7 +258,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxxx                # 可选
 ANTHROPIC_BASE_URL=https://custom.endpoint    # 可选
 ```
 
-### MCP 配置 (.evo_agent/mcp.json)
+### MCP 配置 (.evo-agent/mcp.json)
 ```json
 {
   "mcpServers": {
@@ -336,7 +336,7 @@ go build -o evo-agent
 - [x] Agent 循环完整流程图
 - [x] 上下文压缩三层机制理解
 - [x] 配置加载流程分析
-- [x] .evo_agent/ 配置解析
+- [x] .evo-agent/ 配置解析
 - [x] 完整文件内容提取
 - [x] 代码质量评估
 - [x] 扩展点识别

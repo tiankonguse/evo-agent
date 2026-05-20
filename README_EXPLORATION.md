@@ -27,8 +27,8 @@ You have a **well-architected LLM agent framework** written in Go. It's designed
 ```
 main()
   ├─ Load config (MODEL_ID, API_KEY, BASE_URL)
-  ├─ Initialize MCP servers from .evo_agent/mcp.json
-  ├─ Load skills from .evo_agent/skill/**/SKILL.md
+  ├─ Initialize MCP servers from .evo-agent/mcp.json
+  ├─ Load skills from .evo-agent/skill/**/SKILL.md
   └─ Start REPL: Agent.Run(stdin)
       └─ Loop: Read query → Agent.Loop() → Print response
           └─ Agent.Loop():
@@ -227,8 +227,8 @@ Current output system:
 
 ### If You Want to Extend Features:
 1. **Add a tool**: Copy pattern from `src/internal/tools/bash.go`, add to init()
-2. **Add a skill**: Create `.evo_agent/skill/my-skill/SKILL.md` with frontmatter
-3. **Configure MCP**: Add server to `.evo_agent/mcp.json`, tools appear automatically
+2. **Add a skill**: Create `.evo-agent/skill/my-skill/SKILL.md` with frontmatter
+3. **Configure MCP**: Add server to `.evo-agent/mcp.json`, tools appear automatically
 4. **Tweak limits**: Context limit = 50K, bash timeout = 120s, output = 50KB
 
 ---
@@ -251,7 +251,7 @@ main.go
 │  ├─ compact.go        (context management)
 │  └─ transcripts.go    (session recording)
 ├─ skills
-│  └─ registry.go       (load from .evo_agent/skill/)
+│  └─ registry.go       (load from .evo-agent/skill/)
 └─ ui
    └─ terminal.go       (ANSI colors)
 
@@ -331,8 +331,8 @@ EVO-Agent is a **solid, well-designed framework** for multi-turn LLM agent workf
 
 1. **Do you want a TUI?** → Yes: Start with Phase 1 from TUI_INTEGRATION_GUIDE.md
 2. **Do you want to extend features?** → See "How to extend" in QUICK_REFERENCE.md
-3. **Do you want to add MCP servers?** → Create .evo_agent/mcp.json with server config
-4. **Do you want to add skills?** → Create .evo_agent/skill/name/SKILL.md with frontmatter
+3. **Do you want to add MCP servers?** → Create .evo-agent/mcp.json with server config
+4. **Do you want to add skills?** → Create .evo-agent/skill/name/SKILL.md with frontmatter
 5. **Do you want to understand it better?** → Read EVO_AGENT_ARCHITECTURE.md sections 1-8
 
 ---

@@ -135,7 +135,7 @@ Adds `path` to `state.RecentFiles`. Removes duplicates, then appends; trims to t
 
 ### `func WriteTranscript(messages []anthropic.MessageParam) error`
 
-Serialises `messages` to JSONL and writes the file to `.evo_agent/transcripts/<RFC3339-timestamp>.jsonl`. Creates the directory if it does not exist.
+Serialises `messages` to JSONL and writes the file to `.evo-agent/transcripts/<RFC3339-timestamp>.jsonl`. Creates the directory if it does not exist.
 
 ---
 
@@ -289,7 +289,7 @@ type loadSkillInput struct {
 Loads the full body of the named skill from the skill registry. Returns the skill body wrapped in an XML tag with the skill's name and absolute file path:
 
 ```xml
-<skill name="git-commit" path="/workspace/.evo_agent/skill/git-commit/SKILL.md">
+<skill name="git-commit" path="/workspace/.evo-agent/skill/git-commit/SKILL.md">
 ...body...
 </skill>
 ```
@@ -320,7 +320,7 @@ Lightweight metadata for a single skill, kept in memory for fast catalog generat
 
 ### `func Init()`
 
-Scans `.evo_agent/skill/**/SKILL.md` in the current working directory. For each file found:
+Scans `.evo-agent/skill/**/SKILL.md` in the current working directory. For each file found:
 
 1. Reads and parses YAML frontmatter (`name`, `description`).
 2. Falls back to the parent directory name if `name` is absent.
@@ -349,7 +349,7 @@ Returns `""` when no skills are loaded. Used by `main.go` to inject the catalog 
 Returns the full skill body wrapped in an XML tag, ready to inject into context:
 
 ```xml
-<skill name="git-commit" path="/workspace/.evo_agent/skill/git-commit/SKILL.md">
+<skill name="git-commit" path="/workspace/.evo-agent/skill/git-commit/SKILL.md">
 ...body...
 </skill>
 ```
@@ -395,13 +395,13 @@ type MCPConfig struct {
 }
 ```
 
-Top-level structure of `.evo_agent/mcp.json`.
+Top-level structure of `.evo-agent/mcp.json`.
 
 ---
 
 ### `func InitMCP()`
 
-Reads `.evo_agent/mcp.json`, connects to each enabled server using the appropriate transport, and caches the client in the package-level `mcpServers` map. Missing config file is silently ignored. Prints `[MCP] Connected to "name" (N tools)` for each successful connection.
+Reads `.evo-agent/mcp.json`, connects to each enabled server using the appropriate transport, and caches the client in the package-level `mcpServers` map. Missing config file is silently ignored. Prints `[MCP] Connected to "name" (N tools)` for each successful connection.
 
 ---
 

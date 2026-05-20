@@ -10,7 +10,7 @@
 | **Agent Loop** | `src/internal/agent/loop.go` |
 | **Tool System** | `src/internal/tools/` (registry pattern) |
 | **MCP Support** | stdio, SSE, streamableHttp transports |
-| **Skills** | Loaded from `.evo_agent/skill/**/SKILL.md` |
+| **Skills** | Loaded from `.evo-agent/skill/**/SKILL.md` |
 | **Context Limit** | 50,000 chars (auto-compact) |
 | **Current UI** | Terminal with ANSI colors only |
 
@@ -36,11 +36,11 @@ func init() {
 
 ### 3. MCP Tools
 - Prefixed as `mcp__{server}__{tool}`
-- Connected via `.evo_agent/mcp.json`
+- Connected via `.evo-agent/mcp.json`
 - Support 3 transports: stdio, SSE, HTTP
 
 ### 4. Skills System
-- Location: `.evo_agent/skill/{name}/SKILL.md`
+- Location: `.evo-agent/skill/{name}/SKILL.md`
 - Format: YAML frontmatter + markdown body
 - Access: `load_skill` tool or catalog in system prompt
 
@@ -160,7 +160,7 @@ Output: Triggers LLM-based history compression
 
 ## MCP Configuration
 
-### File: `.evo_agent/mcp.json`
+### File: `.evo-agent/mcp.json`
 
 ```json
 {
@@ -188,7 +188,7 @@ mcp__git__log          // from git server
 
 ## Skills Configuration
 
-### File: `.evo_agent/skill/my-skill/SKILL.md`
+### File: `.evo-agent/skill/my-skill/SKILL.md`
 
 ```yaml
 ---
@@ -296,7 +296,7 @@ Then rebuild: `go build -o evo-agent`
 
 ### Add a Skill
 
-**Dir**: `.evo_agent/skill/my-skill/`
+**Dir**: `.evo-agent/skill/my-skill/`
 
 **File**: `SKILL.md`
 
@@ -333,12 +333,12 @@ Then restart agent.
 ### Check MCP Connections
 ```bash
 # Errors logged at startup if MCP fails to connect
-# Check .evo_agent/mcp.json syntax
+# Check .evo-agent/mcp.json syntax
 ```
 
 ### View Tool Results
 ```bash
-# Large outputs saved to .evo_agent/tool-results/{id}.txt
+# Large outputs saved to .evo-agent/tool-results/{id}.txt
 # Check if tool output seems truncated
 ```
 
@@ -366,8 +366,8 @@ Then restart agent.
 |-------|-------|-----|
 | Model not found | MODEL_ID not set | Export `MODEL_ID` env var |
 | Auth failed | Invalid API key | Check `ANTHROPIC_API_KEY` |
-| MCP not connecting | Bad config | Verify `.evo_agent/mcp.json` |
-| Skills not loading | Wrong path | Check `.evo_agent/skill/` exists |
+| MCP not connecting | Bad config | Verify `.evo-agent/mcp.json` |
+| Skills not loading | Wrong path | Check `.evo-agent/skill/` exists |
 | Timeout errors | Tool taking too long | Bash tools have 120s limit |
 | Context too large | Too much history | Manual `compact()` call |
 
@@ -389,13 +389,13 @@ echo "read main.go" | ./evo-agent
 ### MCP Test
 ```bash
 # Check mcp.json is valid JSON
-jq . .evo_agent/mcp.json
+jq . .evo-agent/mcp.json
 ```
 
 ### Skill Test
 ```bash
 # Check skill format
-ls -la .evo_agent/skill/*/SKILL.md
+ls -la .evo-agent/skill/*/SKILL.md
 ```
 
 ---

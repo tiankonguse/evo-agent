@@ -51,7 +51,7 @@
 
 ```
 InitMCP()
-  ↓ 读取 .evo_agent/mcp.json
+  ↓ 读取 .evo-agent/mcp.json
   ↓ for each mcpServer:
     ├─ Type="stdio" → startMCPProcess()
     │   └─ exec.Command + JSON-RPC over stdin/stdout
@@ -119,7 +119,7 @@ Layer 2: LLM Summarization (自动触发)
 
 Layer 3: Manual Compact (手动触发)
 ├─ 模型调用 "compact" 工具
-├─ CompactHistory() 保存完整转录到 .evo_agent/transcripts/
+├─ CompactHistory() 保存完整转录到 .evo-agent/transcripts/
 ├─ 生成总结 + 支持 focus 参数
 └─ 结果: 完整历史 → 单条消息
 → 精准控制、保留历史记录
@@ -140,7 +140,7 @@ main() {
   opts = BuildOptions(cfg)    // 构建 API 选项
   client = anthropic.NewClient(opts...)
   
-  tools.InitMCP()             // ← 加载 .evo_agent/mcp.json, 连接所有 MCP 服务
+  tools.InitMCP()             // ← 加载 .evo-agent/mcp.json, 连接所有 MCP 服务
   defer tools.ShutdownMCP()   // ← 清理连接
   
   tools.PrintToolList()       // ← 打印工具清单
@@ -392,7 +392,7 @@ SummarizeHistory(client, model, messages):
 ```go
 CompactHistory(client, model, messages, state, focus):
   1. WriteTranscript(messages)
-     → .evo_agent/transcripts/transcript_{timestamp}.jsonl
+     → .evo-agent/transcripts/transcript_{timestamp}.jsonl
   
   2. summary = SummarizeHistory(...)
   
@@ -462,7 +462,7 @@ src/
     └── ui/
         └── terminal.go                  [34 行] 终端 UI
 
-.evo_agent/
+.evo-agent/
 ├── mcp.json                             MCP 配置
 ├── mcp-schema.json                      MCP Schema 参考
 └── transcripts/                         压缩转录存档
@@ -486,8 +486,8 @@ src/
 | `MaxTokens` | 8000 | loop.go | 单次请求最大输出 |
 | `bash timeout` | 120s | bash.go | bash 命令超时 |
 | `MCP timeout` | 30s | mcp.go | MCP 请求超时 |
-| `Transcript DIR` | `.evo_agent/transcripts/` | transcripts.go | 转录保存目录 |
-| `Tool Results DIR` | `.evo_agent/tool-results/` | persist.go | 持久化输出目录 |
+| `Transcript DIR` | `.evo-agent/transcripts/` | transcripts.go | 转录保存目录 |
+| `Tool Results DIR` | `.evo-agent/tool-results/` | persist.go | 持久化输出目录 |
 
 ---
 
@@ -577,7 +577,7 @@ export MODEL_ID=claude-3-5-sonnet-20241022
 export ANTHROPIC_API_KEY=sk-ant-xxxxx
 
 # (可选) 配置 MCP
-# 编辑 .evo_agent/mcp.json 添加 MCP 服务器
+# 编辑 .evo-agent/mcp.json 添加 MCP 服务器
 
 # 编译
 go build -o evo-agent
@@ -603,7 +603,7 @@ go build -o evo-agent
 
 ### 扩展点
 1. 添加新工具: 创建 `src/internal/tools/my_tool.go`，在 `init()` 中 `Register()`
-2. 添加 MCP 服务器: 编辑 `.evo_agent/mcp.json` 添加配置
+2. 添加 MCP 服务器: 编辑 `.evo-agent/mcp.json` 添加配置
 3. 自定义 System Prompt: 修改 `config.go` 的 `Load()` 函数
 4. 调整压缩策略: 修改 `compact.go` 中的常数 (CONTEXT_LIMIT, KEEP_RECENT_RESULTS 等)
 

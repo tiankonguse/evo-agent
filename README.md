@@ -12,7 +12,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
 - **Multi-turn Reasoning**: Drives a loop of thought → action → observation until the model stops requesting tool calls
 - **Context Compaction**: Three-layer strategy (placeholder micro-compact → LLM summarization → model-initiated compact) to handle unlimited-length sessions
-- **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo_agent/mcp.json`
+- **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo-agent/mcp.json`
 - **Skill System**: Two-layer on-demand knowledge — cheap catalog injected into system prompt; full skill body loaded only when needed via `load_skill`
 
 ## Project Structure
@@ -26,7 +26,7 @@ src/
     │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run, RunQuery
     │   ├── state.go           # LoopState, CompactState
     │   ├── compact.go         # MicroCompact, CompactHistory, SummarizeHistory, TrackRecentFile
-    │   └── transcripts.go     # WriteTranscript: save full history to .evo_agent/transcripts/
+    │   └── transcripts.go     # WriteTranscript: save full history to .evo-agent/transcripts/
     ├── config/
     │   └── config.go          # Config struct, LoadEnv, Load
     ├── skills/
@@ -144,9 +144,9 @@ After starting the agent, type your request at the prompt. The TUI renders outpu
 
 ### MCP Tools
 
-MCP tools are loaded automatically at startup from `.evo_agent/mcp.json`. Each tool is exposed to the model with a prefixed name: `mcp__{server}__{tool}`.
+MCP tools are loaded automatically at startup from `.evo-agent/mcp.json`. Each tool is exposed to the model with a prefixed name: `mcp__{server}__{tool}`.
 
-Configure servers in `.evo_agent/mcp.json`:
+Configure servers in `.evo-agent/mcp.json`:
 
 ```json
 {
@@ -187,10 +187,10 @@ Skills provide reusable, task-specific guidance using a two-layer model that kee
 1. **Catalog** (always in system prompt) — just `name: description` for each skill
 2. **Full body** (loaded on demand) — the model calls `load_skill` when it needs detailed instructions
 
-Skill files live under `.evo_agent/skill/`:
+Skill files live under `.evo-agent/skill/`:
 
 ```
-.evo_agent/skill/
+.evo-agent/skill/
 └── git-commit/
     └── SKILL.md
 ```
@@ -216,7 +216,7 @@ Types: feat, fix, docs, refactor, test, chore
 The `load_skill` output includes the absolute path to `SKILL.md` so the model can reference sibling files in the same directory:
 
 ```xml
-<skill name="git-commit" path="/workspace/.evo_agent/skill/git-commit/SKILL.md">
+<skill name="git-commit" path="/workspace/.evo-agent/skill/git-commit/SKILL.md">
 ...body...
 </skill>
 ```
@@ -243,8 +243,8 @@ That's it — the tool is automatically available to the agent on next run.
 | Version | Description |
 |---------|-------------|
 | **v0.7.0** | Add Bubble Tea TUI (`internal/tui`): inline (non-fullscreen) output, thinking/text/tool blocks with uniform spacing, bottom status bar (tokens/model/agent/skills/tools/MCP), `ctrl+enter` newline via bubbletea v2 + Kitty Protocol |
-| **v0.6.0** | Add two-layer skill system: `internal/skills` package (`Init`, `Catalog`, `Load`); `load_skill` tool in `tools/skill.go`; skill catalog auto-injected into system prompt; skills stored in `.evo_agent/skill/<name>/SKILL.md` |
-| **v0.5.0** | Add MCP client support: `stdio`, `sse`, and `streamableHttp` transports; config from `.evo_agent/mcp.json`; `InitMCP`/`ShutdownMCP` in `main.go`; MCP tools auto-merged into `Tools()` and routed in `Dispatch()` |
+| **v0.6.0** | Add two-layer skill system: `internal/skills` package (`Init`, `Catalog`, `Load`); `load_skill` tool in `tools/skill.go`; skill catalog auto-injected into system prompt; skills stored in `.evo-agent/skill/<name>/SKILL.md` |
+| **v0.5.0** | Add MCP client support: `stdio`, `sse`, and `streamableHttp` transports; config from `.evo-agent/mcp.json`; `InitMCP`/`ShutdownMCP` in `main.go`; MCP tools auto-merged into `Tools()` and routed in `Dispatch()` |
 | **v0.4.0** | Add context compaction: `CompactState`, `MicroCompact`, `CompactHistory`, `WriteTranscript`, and `compact` tool; `loop.go` integrates automatic and model-initiated compaction |
 | **v0.3.0** | Refactor loop: move REPL into `loop.go` (`Run` method), add `TurnCount`/`TransitionReason` to `LoopState`, generate `SystemMsg` in `config.go` |
 | **v0.2.0** | Add `read_file`, `write_file`, `edit_file` tools; introduce self-registering `init()` pattern and table-driven tool dispatch |

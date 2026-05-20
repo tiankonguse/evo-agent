@@ -227,7 +227,7 @@ Anthropic API 的 messages 是一个数组，每条消息有两个核心字段�
   {
     "role": "user",
     "content": [
-      { "type": "tool_result", "tool_use_id": "tool_abc123", "content": "128M  evo_agent" }
+      { "type": "tool_result", "tool_use_id": "tool_abc123", "content": "128M  evo-agent" }
     ]
   },
   {
@@ -502,7 +502,7 @@ sequenceDiagram
     LLM-->>AgentLoop: tool_use: bash("du -sh *")
     AgentLoop->>AgentLoop: history += [Assistant: tool_use]
     AgentLoop->>AgentLoop: 执行 bash，得到结果
-    AgentLoop->>AgentLoop: history += [User: tool_result "128M evo_agent"]
+    AgentLoop->>AgentLoop: history += [User: tool_result "128M evo-agent"]
 
     AgentLoop->>LLM: messages=[User, Assistant, User(tool_result)] + ...
     LLM-->>AgentLoop: "最大的文件是 evo_agent，128M"

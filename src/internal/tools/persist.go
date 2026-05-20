@@ -9,7 +9,7 @@ import (
 const (
 	persistThreshold = 30000
 	previewChars     = 2000
-	toolResultsDir   = ".evo_agent/tool-results"
+	toolResultsDir   = ".evo-agent/tool-results"
 )
 
 // persistLargeOutput saves output exceeding the threshold to disk and returns

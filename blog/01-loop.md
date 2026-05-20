@@ -149,7 +149,7 @@ Observation：拿到了结果。
 Thought：看到了，最大的文件是
 
 ```
-evo_agent
+evo-agent
 ```
 
 Action：不需要再调工具了，直接出答案。
@@ -157,7 +157,7 @@ Action：不需要再调工具了，直接出答案。
 Final Answer：最大的文件是
 
 ```
-evo_agent
+evo-agent
 ```
 
 三轮就搞定了。

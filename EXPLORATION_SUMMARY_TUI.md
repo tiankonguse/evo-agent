@@ -85,10 +85,10 @@ src/go.mod                            # 25 lines: module name, versions
 
 ### State & Configuration
 ```
-.evo_agent/mcp.json                   # MCP server config (optional)
-.evo_agent/skill/*/SKILL.md           # Skill definitions (optional)
-.evo_agent/transcripts/               # Session history (auto-created)
-.evo_agent/tool-results/              # Large outputs (auto-created)
+.evo-agent/mcp.json                   # MCP server config (optional)
+.evo-agent/skill/*/SKILL.md           # Skill definitions (optional)
+.evo-agent/transcripts/               # Session history (auto-created)
+.evo-agent/tool-results/              # Large outputs (auto-created)
 .env                                  # Environment: MODEL_ID, API_KEY
 ```
 
@@ -185,7 +185,7 @@ func init() {
 **MCP** = Model Context Protocol = dynamic tool loading
 
 ```
-.evo_agent/mcp.json
+.evo-agent/mcp.json
   ↓
 tools.InitMCP()
   ├─ Read config
@@ -214,7 +214,7 @@ tools.DispatchMCP()
 Skills are specialized instructions loaded on demand:
 
 ```
-.evo_agent/skill/my-skill/SKILL.md
+.evo-agent/skill/my-skill/SKILL.md
 ├─ YAML frontmatter: name, description
 └─ Markdown body: detailed instructions
 
@@ -297,8 +297,8 @@ maxReadBytes         = 50000      // Max read_file output
 maxBashOutput        = 50000      // Max bash output
 previewPrintLen      = 200        // Terminal preview length
 previewChars         = 2000       // Persisted output preview
-toolResultsDir       = ".evo_agent/tool-results"
-transcriptDir        = ".evo_agent/transcripts"
+toolResultsDir       = ".evo-agent/tool-results"
+transcriptDir        = ".evo-agent/transcripts"
 ```
 
 ---

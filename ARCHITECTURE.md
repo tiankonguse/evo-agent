@@ -39,7 +39,7 @@ Key functions:
 - **`CompactHistory(client, model, messages, state, focus)`** — full summarisation + transcript write
 - **`SummarizeHistory(client, model, messages)`** — calls LLM to produce a structured summary
 - **`TrackRecentFile(state, path)`** — maintains `CompactState.RecentFiles` FIFO list
-- **`WriteTranscript(messages)`** — saves JSONL snapshot to `.evo_agent/transcripts/<timestamp>.jsonl`
+- **`WriteTranscript(messages)`** — saves JSONL snapshot to `.evo-agent/transcripts/<timestamp>.jsonl`
 
 ### 3. Tool Engine (`internal/tools`)
 
@@ -70,7 +70,7 @@ A two-layer on-demand knowledge model that keeps the system prompt small.
 
 - **`SkillManifest`** — lightweight metadata kept in memory: `Name`, `Description`
 - **`skillDocument`** — full document: `Manifest`, `Body` (trimmed), `Path` (absolute path to `SKILL.md`)
-- **`Init()`** — walks `.evo_agent/skill/**/SKILL.md` at startup; parses YAML frontmatter; populates the package-level `documents` map; missing directory silently ignored
+- **`Init()`** — walks `.evo-agent/skill/**/SKILL.md` at startup; parses YAML frontmatter; populates the package-level `documents` map; missing directory silently ignored
 - **`Catalog() string`** — returns a `"- name: description\n"` list for every loaded skill, sorted by name; returns `""` when no skills are loaded
 - **`Load(name) string`** — returns `<skill name=… path=…>\nbody\n</skill>`; returns a human-readable error with available names when the skill is unknown
 - **`parseFrontmatter(text)`** — extracts YAML front matter delimited by `---` using a compiled regexp; key–value pairs separated by `:` on each line
@@ -78,7 +78,7 @@ A two-layer on-demand knowledge model that keeps the system prompt small.
 **Skill file layout:**
 
 ```
-.evo_agent/skill/
+.evo-agent/skill/
 └── <skill-name>/
     └── SKILL.md      # frontmatter (name, description) + body
 ```
@@ -87,7 +87,7 @@ A two-layer on-demand knowledge model that keeps the system prompt small.
 
 ### 5. MCP Client (`internal/tools/mcp.go`)
 
-Connects to external MCP (Model Context Protocol) tool servers at startup. Config is loaded from `.evo_agent/mcp.json` (missing file is silently ignored).
+Connects to external MCP (Model Context Protocol) tool servers at startup. Config is loaded from `.evo-agent/mcp.json` (missing file is silently ignored).
 
 **Transports:**
 
@@ -162,7 +162,7 @@ An inline (non-fullscreen) Bubble Tea UI built on `charm.land/bubbletea/v2`.
 
 - Loads config, creates the Anthropic client
 - Calls `tools.InitMCP()` to connect MCP servers; defers `tools.ShutdownMCP()`
-- Calls `skills.Init()` to scan `.evo_agent/skill/`; appends the skill catalog to `cfg.SystemMsg`
+- Calls `skills.Init()` to scan `.evo-agent/skill/`; appends the skill catalog to `cfg.SystemMsg`
 - `--plain` flag: runs `agent.Run(os.Stdin)` with the default `TerminalSink`
 - TUI mode (default): builds `SidebarInfo`, starts agent goroutine reading from `queryCh`, calls `tui.Run(info, queryCh)`
 
