@@ -36,8 +36,7 @@ func (a *Agent) autoCompact(state *LoopState) {
 		return
 	}
 
-	fmt.Printf("%s[auto compact triggered: %d chars]%s\n",
-		ui.ColorMagenta, contextSize, ui.ColorReset)
+	ui.PrintSystem(fmt.Sprintf("[auto compact triggered: %d chars]", contextSize))
 
 	newMessages, err := CompactHistory(
 		a.client,
@@ -49,8 +48,7 @@ func (a *Agent) autoCompact(state *LoopState) {
 	if err == nil {
 		state.Messages = newMessages
 	} else {
-		fmt.Printf("%sERROR: Compaction failed: %v%s\n",
-			ui.ColorReset, err, ui.ColorReset)
+		ui.PrintError(fmt.Sprintf("ERROR: Compaction failed: %v", err))
 	}
 }
 
@@ -65,7 +63,7 @@ func (a *Agent) manualCompact(state *LoopState, content []anthropic.ContentBlock
 		json.Unmarshal(block.Input, &input)
 		focus, _ := input["focus"].(string)
 
-		fmt.Printf("%s[manual compact requested]%s\n", ui.ColorMagenta, ui.ColorReset)
+		ui.PrintSystem("[manual compact requested]")
 		newMessages, err := CompactHistory(
 			a.client,
 			a.cfg.ModelID,
@@ -81,8 +79,6 @@ func (a *Agent) manualCompact(state *LoopState, content []anthropic.ContentBlock
 }
 
 // Loop drives the agent loop until the model stops requesting tool calls.
-// Loop sends the current message history to the model, appends the
-// response, executes any tool calls, and returns true if another turn is needed.
 func (a *Agent) Loop(state *LoopState) bool {
 	// Initialize CompactState if needed
 	if state.CompactState == nil {
@@ -110,14 +106,11 @@ func (a *Agent) Loop(state *LoopState) bool {
 		// Append assistant response to history
 		state.Messages = append(state.Messages, resp.ToParam())
 
-		fmt.Println()
-		fmt.Printf("%sDEBUG: Model used: %s, Tokens input: %d, Tokens output: %d, stop_reason: %s%s\n",
-			ui.ColorMagenta,
-			resp.Model,
+		ui.PrintTokens(
+			string(resp.Model),
 			resp.Usage.InputTokens,
 			resp.Usage.OutputTokens,
-			resp.StopReason,
-			ui.ColorReset,
+			string(resp.StopReason),
 		)
 
 		// Track file reads before executing tools
@@ -147,12 +140,11 @@ func (a *Agent) Loop(state *LoopState) bool {
 	}
 }
 
-// Run is the top-level REPL: reads queries from r, runs the agent loop for
-// each one, and prints the final assistant response.
+// Run is the top-level REPL for plain-text mode.
 func (a *Agent) Run(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	var history []anthropic.MessageParam
-	compactState := &CompactState{} // Initialize once for session
+	compactState := &CompactState{}
 
 	for {
 		fmt.Printf("%s >> %s", ui.ColorCyan, ui.ColorReset)
@@ -171,11 +163,11 @@ func (a *Agent) Run(r io.Reader) {
 		state := &LoopState{
 			Messages:     history,
 			TurnCount:    1,
-			CompactState: compactState, // Persist across queries
+			CompactState: compactState,
 		}
 		a.Loop(state)
 		history = state.Messages
-		compactState = state.CompactState // Update reference
+		compactState = state.CompactState
 
 		if len(history) > 0 {
 			last := history[len(history)-1]
@@ -189,4 +181,23 @@ func (a *Agent) Run(r io.Reader) {
 		}
 		fmt.Println()
 	}
+}
+
+// RunQuery executes a single query and signals done via doneCh.
+// Used by the TUI mode.
+func (a *Agent) RunQuery(query string, history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
+	*history = append(*history, anthropic.NewUserMessage(
+		anthropic.NewTextBlock(query),
+	))
+
+	state := &LoopState{
+		Messages:     *history,
+		TurnCount:    1,
+		CompactState: *compactState,
+	}
+	a.Loop(state)
+	*history = state.Messages
+	*compactState = state.CompactState
+
+	close(doneCh)
 }

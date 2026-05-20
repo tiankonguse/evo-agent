@@ -1,8 +1,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -11,6 +13,14 @@ import (
 	"evo-agent/internal/config"
 	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
+	"evo-agent/internal/tui"
+	"evo-agent/internal/ui"
+)
+
+const (
+	agentName    = "evo-agent"
+	agentVersion = "0.4.0"
+	contextLimit = 200000 // Claude's context window (approx)
 )
 
 func BuildOptions(cfg *config.Config) []option.RequestOption {
@@ -28,6 +38,9 @@ func BuildOptions(cfg *config.Config) []option.RequestOption {
 }
 
 func main() {
+	plain := flag.Bool("plain", false, "disable TUI, use plain text output")
+	flag.Parse()
+
 	config.LoadEnv()
 	cfg := config.Load()
 
@@ -49,9 +62,78 @@ func main() {
 			"\nUse load_skill when a task needs specialized instructions before you act."
 	}
 
-	// 打印工具列表
-	tools.PrintToolList()
-
 	a := agent.New(&client, cfg)
-	a.Run(os.Stdin)
+
+	if *plain {
+		// Plain-text REPL (original behaviour) — TerminalSink is the default.
+		tools.PrintToolList()
+		a.Run(os.Stdin)
+		return
+	}
+
+	// ── TUI mode ─────────────────────────────────────────────────────────────
+	// ui.SetSink is called inside tui.Run after the Sink is created.
+
+	// Determine provider from base URL or default
+	provider := "Anthropic"
+	if cfg.BaseURL != "" {
+		provider = cfg.BaseURL
+	}
+
+	// Collect tool names
+	toolNames := builtinToolNames()
+	mcpServers := mcpServerNames()
+	skillNames := skillList()
+
+	info := tui.SidebarInfo{
+		AgentName:    agentName,
+		Version:      agentVersion,
+		ProjectDir:   cfg.ProjectDir,
+		Model:        cfg.ModelID,
+		Provider:     provider,
+		ContextLimit: contextLimit,
+		Skills:       skillNames,
+		Tools:        toolNames,
+		MCPServers:   mcpServers,
+	}
+
+	// Channel for user queries (TUI → agent goroutine)
+	queryCh := make(chan string, 4)
+
+	// Agent goroutine: processes one query at a time
+	go func() {
+		var history []anthropic.MessageParam
+		compactState := &agent.CompactState{}
+		for query := range queryCh {
+			doneCh := make(chan struct{})
+			a.RunQuery(query, &history, &compactState, doneCh)
+			<-doneCh
+			ui.PrintDone()
+		}
+	}()
+
+	if err := tui.Run(info, queryCh); err != nil {
+		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func builtinToolNames() []string {
+	all := tools.RegistryNames()
+	sort.Strings(all)
+	return all
+}
+
+func mcpServerNames() []string {
+	all := tools.MCPServerNames()
+	sort.Strings(all)
+	return all
+}
+
+func skillList() []string {
+	names := skills.Names()
+	sort.Strings(names)
+	return names
 }

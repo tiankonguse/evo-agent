@@ -112,7 +112,7 @@ Be compact but concrete.
 
 ` + conversation
 
-	fmt.Printf("%sDEBUG: Generating summary...%s\n", ui.ColorMagenta, ui.ColorReset)
+	ui.PrintSystem("DEBUG: Generating summary...")
 	start := time.Now()
 
 	resp, err := client.Messages.New(context.Background(), anthropic.MessageNewParams{
@@ -122,7 +122,7 @@ Be compact but concrete.
 	})
 
 	elapsed := time.Since(start).Seconds()
-	fmt.Printf("%sDEBUG: Summary generated in %.2fs%s\n", ui.ColorMagenta, elapsed, ui.ColorReset)
+	ui.PrintSystem(fmt.Sprintf("DEBUG: Summary generated in %.2fs", elapsed))
 
 	if err != nil {
 		return "", err
@@ -153,13 +153,13 @@ func CompactHistory(
 ) ([]anthropic.MessageParam, error) {
 	// Save transcript before compacting
 	if err := WriteTranscript(messages); err != nil {
-		fmt.Printf("%sWARNING: Failed to write transcript: %v%s\n", ui.ColorMagenta, err, ui.ColorReset)
+		ui.PrintSystem(fmt.Sprintf("WARNING: Failed to write transcript: %v", err))
 	}
 
 	// Generate summary
 	summary, err := SummarizeHistory(client, model, messages)
 	if err != nil {
-		fmt.Printf("%sERROR: Summarization failed: %v%s\n", ui.ColorReset, err, ui.ColorReset)
+		ui.PrintSystem(fmt.Sprintf("ERROR: Summarization failed: %v", err))
 		return messages, err
 	}
 
@@ -181,8 +181,7 @@ func CompactHistory(
 	state.LastSummary = summary
 	state.CompactCount++
 
-	fmt.Printf("%s[Compacted to %d chars, removed %d messages]%s\n",
-		ui.ColorMagenta, len(summary), len(messages)-1, ui.ColorReset)
+	ui.PrintSystem(fmt.Sprintf("[Compacted to %d chars, removed %d messages]", len(summary), len(messages)-1))
 
 	// Return new message list with only the summary
 	return []anthropic.MessageParam{

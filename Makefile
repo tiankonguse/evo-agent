@@ -1,4 +1,4 @@
-BINARY_NAME = evo_agent
+BINARY_NAME = evo-agent
 BUILD_DIR   = build
 SRC_DIR     = src
 

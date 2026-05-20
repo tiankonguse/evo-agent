@@ -6,6 +6,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 
 ## Features
 
+- **Bubble Tea TUI**: Inline (non-fullscreen) terminal UI — thinking blocks, tool call results, and text responses rendered as uniform blocks with a live status bar at the bottom
 - **Multi-tool Support**: bash, read_file, write_file, edit_file, compact, load_skill — all self-registering via `init()`
 - **Self-registering Tool Pattern**: Adding a new tool only requires a single new file; no central registration needed
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
@@ -13,17 +14,16 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **Context Compaction**: Three-layer strategy (placeholder micro-compact → LLM summarization → model-initiated compact) to handle unlimited-length sessions
 - **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo_agent/mcp.json`
 - **Skill System**: Two-layer on-demand knowledge — cheap catalog injected into system prompt; full skill body loaded only when needed via `load_skill`
-- **Colored CLI**: Clear terminal output distinguishing thinking, tool calls, responses, and errors
 
 ## Project Structure
 
 ```
 src/
-├── main.go                    # Entry point: input loop, history management, MCP init/shutdown, skill catalog
+├── main.go                    # Entry point: TUI/plain mode, MCP init/shutdown, skill catalog
 ├── go.mod
 └── internal/
     ├── agent/
-    │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run (REPL)
+    │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run, RunQuery
     │   ├── state.go           # LoopState, CompactState
     │   ├── compact.go         # MicroCompact, CompactHistory, SummarizeHistory, TrackRecentFile
     │   └── transcripts.go     # WriteTranscript: save full history to .evo_agent/transcripts/
@@ -41,8 +41,18 @@ src/
     │   ├── edit_file.go       # edit_file tool (exact-string replacement or create)
     │   ├── compact.go         # compact tool (model-initiated context compaction)
     │   └── skill.go           # load_skill tool (load full skill body on demand)
+    ├── tui/
+    │   ├── run.go             # Run(): create Sink, start Bubble Tea program
+    │   ├── model.go           # Bubble Tea Model: Init/Update/View, event handling
+    │   ├── blocks.go          # Block types (thinking/text/tool/system/user) and constructors
+    │   ├── render.go          # renderThinking, renderToolCall, renderStatusBar, formatDuration
+    │   ├── styles.go          # lipgloss styles and layout constants
+    │   ├── sidebar.go         # SidebarInfo struct, truncate/shortenPath helpers
+    │   └── sink.go            # Sink: ui.EventSink implementation backed by buffered channel
     └── ui/
-        └── terminal.go        # ANSI color helpers for terminal output
+        ├── terminal.go        # Print* functions routing through globalSink; ANSI constants
+        ├── event.go           # Event struct and EventKind constants
+        └── sink.go            # EventSink interface and globalSink registration
 ```
 
 ## Configuration
@@ -74,11 +84,14 @@ make test
 
 # Or run directly
 cd src && go run main.go
+
+# Plain-text mode (no TUI)
+cd src && go run main.go --plain
 ```
 
 ## Usage
 
-After starting the agent, type your request at the prompt:
+After starting the agent, type your request at the prompt. The TUI renders output inline — thinking blocks, tool calls, and text responses each appear as styled blocks separated by a blank line.
 
 ```
 >> list all Go files in this workspace
@@ -87,7 +100,34 @@ After starting the agent, type your request at the prompt:
 >> exit
 ```
 
-Type `q` or `exit` to quit.
+- **Enter** — send message
+- **Ctrl+Enter / Alt+Enter** — insert newline in the input box
+- **Ctrl+C** — quit
+- Type `q` or `exit` to quit
+
+### TUI Layout
+
+```
+ You: list all Go files                        ← user block
+                                               ← blank line
+ ▸ Thinking  🕐 1.2s                           ← thinking block (purple)
+   Let me search for Go files…
+                                               ← blank line
+ ✓ bash  find . -name "*.go"  🕐 0.3s         ← tool call block
+   Result:
+   ./main.go
+   ./internal/agent/loop.go
+   …
+                                               ← blank line
+  Here are the Go files I found…              ← text block
+                                               ← blank line
+ 🕐 2.1s                                       ← elapsed bar
+────────────────────────────────────────────
+ >> [input area]
+────────────────────────────────────────────
+ tokens:1234/200000(0.6%)  model:…  agent:…  skills:3  tools:6  mcp:0
+ Enter send • Ctrl+Enter/Alt+Enter newline • ctrl+c quit
+```
 
 ## Tools
 
@@ -202,6 +242,7 @@ That's it — the tool is automatically available to the agent on next run.
 
 | Version | Description |
 |---------|-------------|
+| **v0.7.0** | Add Bubble Tea TUI (`internal/tui`): inline (non-fullscreen) output, thinking/text/tool blocks with uniform spacing, bottom status bar (tokens/model/agent/skills/tools/MCP), `ctrl+enter` newline via bubbletea v2 + Kitty Protocol |
 | **v0.6.0** | Add two-layer skill system: `internal/skills` package (`Init`, `Catalog`, `Load`); `load_skill` tool in `tools/skill.go`; skill catalog auto-injected into system prompt; skills stored in `.evo_agent/skill/<name>/SKILL.md` |
 | **v0.5.0** | Add MCP client support: `stdio`, `sse`, and `streamableHttp` transports; config from `.evo_agent/mcp.json`; `InitMCP`/`ShutdownMCP` in `main.go`; MCP tools auto-merged into `Tools()` and routed in `Dispatch()` |
 | **v0.4.0** | Add context compaction: `CompactState`, `MicroCompact`, `CompactHistory`, `WriteTranscript`, and `compact` tool; `loop.go` integrates automatic and model-initiated compaction |
@@ -216,3 +257,6 @@ That's it — the tool is automatically available to the agent on next run.
 | `anthropic-sdk-go` v1.41.0        | Anthropic API client                 |
 | `invopop/jsonschema` v0.13.0      | Reflect Go structs → JSON Schema     |
 | `joho/godotenv` v1.5.1            | Load `.env` files                    |
+| `charm.land/bubbletea/v2` v2.0.6  | TUI framework (Kitty Protocol, `ctrl+enter` support) |
+| `charm.land/bubbles/v2` v2.1.0    | Textarea widget                      |
+| `charm.land/lipgloss/v2` v2.0.3   | Terminal styling                     |

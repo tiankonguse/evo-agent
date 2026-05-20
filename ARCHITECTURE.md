@@ -121,73 +121,115 @@ type mcpClient interface {
 
 ### 7. User Interface (`internal/ui`)
 
-Provides ANSI-colored terminal output to separate different agent output types.
+Routes agent output through an `EventSink` interface so the same agent code works in both TUI and plain-text modes.
 
-| Function         | Color   | Purpose                              |
-|------------------|---------|--------------------------------------|
-| `PrintThinking`  | Green   | Model's extended thinking            |
-| `PrintText`      | Cyan    | Model's text response                |
-| `PrintToolCall`  | Blue    | Tool name being invoked              |
-| `PrintCommand`   | Yellow  | Tool call with arguments             |
-| `PrintError`     | Red     | Errors from tools or the API         |
+- **`EventSink`** — interface with a single `Emit(Event)` method
+- **`SetSink(s EventSink)`** — replaces the global sink at startup
+- **`TerminalSink`** — default sink; writes ANSI-colored text directly to stdout
+- **`Event` / `EventKind`** — typed event struct covering: `EvThinking`, `EvText`, `EvToolCall`, `EvToolResult`, `EvDone`, `EvSystem`, `EvTokens`
+- **`Print*` helpers** — `PrintThinking`, `PrintText`, `PrintToolCall`, `PrintToolResult`, `PrintError`, `PrintSystem`, `PrintTokens`, `PrintDone` — all call `globalSink.Emit()`
 
-### 8. Entry Point (`main.go`)
+### 8. TUI Layer (`internal/tui`)
+
+An inline (non-fullscreen) Bubble Tea UI built on `charm.land/bubbletea/v2`.
+
+**Design principles:**
+- Output flows into the terminal scroll buffer via `tea.Println` — no viewport clipping, native mouse selection and scroll
+- Each conversation unit (user message, thinking, text, tool call) is a **Block** printed permanently when complete
+- `View()` only renders the live bottom area: pending tool spinners + input textarea + status bar + help bar
+
+**Components:**
+
+| File | Responsibility |
+|------|---------------|
+| `sink.go` | `Sink` — buffered channel-backed `ui.EventSink`; injected as global sink at startup |
+| `blocks.go` | `Block` struct with `BlockKind` / `ToolStatus`; constructors for each block type |
+| `model.go` | Bubble Tea `Model`: `Init`, `Update`, `View`; `handleKey`, `handleAgentEvent`; event → `tea.Println` pipeline |
+| `render.go` | `renderThinking`, `renderToolCall`, `renderStatusBar`, `formatDuration` |
+| `styles.go` | All `lipgloss` styles and the `defaultResultRows` constant |
+| `sidebar.go` | `SidebarInfo` struct; `truncate` / `shortenPath` helpers |
+| `run.go` | `Run()` — creates `Sink`, sets global sink, builds `Model`, starts program |
+
+**Block spacing:** every `tea.Println` call appends `"\n"` so all block types are separated by exactly one blank line.
+
+**Key bubbletea v2 details:**
+- `View()` returns `tea.View` (wrapped with `tea.NewView(...)`)
+- `tea.KeyPressMsg` replaces v1's `tea.KeyMsg`
+- `ta.Focus()` returns `tea.Cmd`; called in `Init()` not `NewModel()`
+- `ctrl+enter` / `alt+enter` distinguished via Kitty Keyboard Protocol
+
+### 9. Entry Point (`main.go`)
 
 - Loads config, creates the Anthropic client
 - Calls `tools.InitMCP()` to connect MCP servers; defers `tools.ShutdownMCP()`
-- Calls `skills.Init()` to scan `.evo_agent/skill/`; appends the skill catalog to `cfg.SystemMsg` if any skills are found
-- Creates `Agent` and calls `agent.Run()` which manages the REPL loop, history, and compaction state internally
+- Calls `skills.Init()` to scan `.evo_agent/skill/`; appends the skill catalog to `cfg.SystemMsg`
+- `--plain` flag: runs `agent.Run(os.Stdin)` with the default `TerminalSink`
+- TUI mode (default): builds `SidebarInfo`, starts agent goroutine reading from `queryCh`, calls `tui.Run(info, queryCh)`
 
 ## Data Flow
 
 ```
-User Input
+User Input (TUI textarea or stdin in --plain mode)
     │
     ▼
-Agent.Run()
-    │
-    ▼  (per REPL turn)
-Agent.Loop(state)
-        │
-        ▼
-  MicroCompact(messages)          ← replace older tool results with placeholders
-        │
-        ▼
-  EstimateContextSize > 50,000?
-        │ yes
-        ▼
-  CompactHistory(...)             ← write transcript + LLM summary → 1 message
-        │
-        ▼
-  Agent.RunOneTurn(state)
-        │
-        ├──► Anthropic API  (system prompt + tools + history)
-        │         │
-        │         ▼
-        │    Response (TextBlock / ThinkingBlock / ToolUseBlock)
-        │         │
-        ▼         ▼
-  tools.Execute(content)
-        │
-        ├── PrintThinking / PrintText / PrintCommand
-        │
-        └──► tools.Dispatch(name, input)
+queryCh  ──►  Agent goroutine (main.go)
                     │
-                    ├── mcp__* → DispatchMCP → mcpClient.callTool
+                    ▼  (per REPL turn)
+            Agent.RunQuery(query, &history, &compactState, doneCh)
                     │
-                    ├── bash / read_file / write_file / edit_file
-                    │         (read_file also calls TrackRecentFile)
+                    ▼
+            Agent.Loop(state)
                     │
-                    ├── load_skill → skills.Load(name)
+                    ▼
+              MicroCompact(messages)          ← replace older tool results with placeholders
                     │
-                    └── compact → CompactHistory(focus=...)
-                            │
-                            ▼
-                      ToolResult appended to history
-                            │
-                            ▼
-                    RunOneTurn returns true  ──► repeat
-                    RunOneTurn returns false ──► done
+                    ▼
+              EstimateContextSize > 50,000?
+                    │ yes
+                    ▼
+              CompactHistory(...)             ← write transcript + LLM summary → 1 message
+                    │
+                    ▼
+              Agent.RunOneTurn(state)
+                    │
+                    ├──► Anthropic API  (system prompt + tools + history)
+                    │         │
+                    │         ▼
+                    │    Response (TextBlock / ThinkingBlock / ToolUseBlock)
+                    │         │
+                    ▼         ▼
+              tools.Execute(content)
+                    │
+                    ├── ui.PrintThinking / PrintText / PrintToolCall / PrintToolResult
+                    │       │
+                    │       ▼
+                    │   globalSink.Emit(Event)
+                    │       │
+                    │       ├── TUI mode: tui.Sink → buffered channel → Bubble Tea model
+                    │       │       └── tea.Println(renderBlock(...)+"\n")  [permanent scroll buffer]
+                    │       │
+                    │       └── plain mode: TerminalSink → fmt.Printf to stdout
+                    │
+                    └──► tools.Dispatch(name, input)
+                                │
+                                ├── mcp__* → DispatchMCP → mcpClient.callTool
+                                │
+                                ├── bash / read_file / write_file / edit_file
+                                │         (read_file also calls TrackRecentFile)
+                                │
+                                ├── load_skill → skills.Load(name)
+                                │
+                                └── compact → CompactHistory(focus=...)
+                                        │
+                                        ▼
+                                  ToolResult appended to history
+                                        │
+                                        ▼
+                                RunOneTurn returns true  ──► repeat
+                                RunOneTurn returns false ──► done
+                                        │
+                                        ▼
+                              ui.PrintDone()  ──►  tui.Model sets busy=false
 ```
 
 ## Tool Registration Pattern

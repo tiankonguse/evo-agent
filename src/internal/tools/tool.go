@@ -52,6 +52,15 @@ func Dispatch(name string, input json.RawMessage) (string, error) {
 	return "", nil
 }
 
+// RegistryNames returns the names of all registered built-in tools.
+func RegistryNames() []string {
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, name)
+	}
+	return names
+}
+
 // GenerateSchema uses reflection to build a ToolInputSchemaParam from a Go struct.
 // Annotate fields with `jsonschema_description:"..."` to add descriptions.
 func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {

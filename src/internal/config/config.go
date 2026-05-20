@@ -10,10 +10,11 @@ import (
 
 // Config holds all runtime configuration loaded from environment variables.
 type Config struct {
-	ModelID   string
-	APIKey    string
-	BaseURL   string
-	SystemMsg string
+	ModelID    string
+	APIKey     string
+	BaseURL    string
+	SystemMsg  string
+	ProjectDir string
 }
 
 // LoadEnv loads .env files: first from the directory of the running binary,
@@ -33,12 +34,10 @@ func LoadEnv() {
 func Load() *Config {
 	cwd, _ := os.Getwd()
 	return &Config{
-		ModelID: os.Getenv("MODEL_ID"),
-		APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
-		BaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
-		SystemMsg: fmt.Sprintf(
-			"You are a coding agent at %s.",
-			cwd,
-		),
+		ModelID:    os.Getenv("MODEL_ID"),
+		APIKey:     os.Getenv("ANTHROPIC_API_KEY"),
+		BaseURL:    os.Getenv("ANTHROPIC_BASE_URL"),
+		ProjectDir: cwd,
+		SystemMsg:  fmt.Sprintf("You are a coding agent at %s.", cwd),
 	}
 }

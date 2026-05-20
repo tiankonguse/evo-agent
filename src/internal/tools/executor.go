@@ -9,11 +9,10 @@ import (
 	"evo-agent/internal/ui"
 )
 
-const previewPrintLen = 200 // Max chars of a tool result printed to terminal
+const previewPrintLen = 200 // Max chars of a tool result printed in plain mode
 
-// Execute iterates over a response's content blocks, prints output for each,
+// Execute iterates over a response's content blocks, emits UI events for each,
 // runs any tool calls via the registry, and returns the accumulated tool results.
-// compactState is passed as interface{} to avoid circular imports
 func Execute(content []anthropic.ContentBlockUnion, compactState interface{}) []anthropic.ContentBlockParamUnion {
 	var results []anthropic.ContentBlockParamUnion
 
@@ -26,8 +25,9 @@ func Execute(content []anthropic.ContentBlockUnion, compactState interface{}) []
 			ui.PrintText(v.Text)
 
 		case anthropic.ToolUseBlock:
-			ui.PrintToolCall(v.Name)
-			ui.PrintCommand(fmt.Sprintf("%s(%s)", v.Name, v.JSON.Input.Raw()))
+			inputRaw := v.JSON.Input.Raw()
+			ui.PrintToolCall(v.ID, v.Name, inputRaw)
+			ui.PrintCommand(fmt.Sprintf("%s(%s)", v.Name, inputRaw))
 
 			inputBytes, _ := json.Marshal(v.Input)
 			output, err := Dispatch(v.Name, inputBytes)
@@ -38,13 +38,9 @@ func Execute(content []anthropic.ContentBlockUnion, compactState interface{}) []
 				ui.PrintError(fmt.Sprintf("Error: %v", err))
 			} else {
 				output = persistLargeOutput(v.ID, output)
-				preview := output
-				if len(preview) > previewPrintLen {
-					preview = preview[:previewPrintLen]
-				}
-				fmt.Println(preview)
 			}
 
+			ui.PrintToolResult(v.ID, output, isError)
 			results = append(results, anthropic.NewToolResultBlock(v.ID, output, isError))
 
 		default:

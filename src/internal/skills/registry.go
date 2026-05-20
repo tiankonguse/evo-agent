@@ -106,6 +106,15 @@ func Load(name string) string {
 	return fmt.Sprintf("<skill name=%q path=%q>\n%s\n</skill>", doc.Manifest.Name, doc.Path, doc.Body)
 }
 
+// Names returns the names of all loaded skills.
+func Names() []string {
+	names := make([]string, 0, len(documents))
+	for name := range documents {
+		names = append(names, name)
+	}
+	return names
+}
+
 // ---------- helpers ----------
 
 func parseFrontmatter(text string) (meta map[string]string, body string) {

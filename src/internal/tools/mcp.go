@@ -692,6 +692,26 @@ func DispatchMCP(name string, input json.RawMessage) (string, error) {
 	return client.callTool(toolName, input)
 }
 
+// MCPToolNames returns all mcp__{server}__{tool} prefixed names.
+func MCPToolNames() []string {
+	var names []string
+	for serverName, client := range mcpServers {
+		for _, t := range client.getTools() {
+			names = append(names, "mcp__"+serverName+"__"+t.Name)
+		}
+	}
+	return names
+}
+
+// MCPServerNames returns the names of all connected MCP servers.
+func MCPServerNames() []string {
+	names := make([]string, 0, len(mcpServers))
+	for serverName := range mcpServers {
+		names = append(names, serverName)
+	}
+	return names
+}
+
 func PrintToolList() {
 	for serverName, client := range mcpServers {
 		fmt.Printf("Server: %s\n", serverName)
