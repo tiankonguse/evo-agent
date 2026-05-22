@@ -56,3 +56,8 @@ func PrintTokens(model string, inputTok, outputTok int64, stopReason string) {
 func PrintDone() {
 	globalSink.Emit(Event{Kind: EvDone})
 }
+
+// EmitTodo broadcasts an updated session plan to the active sink.
+func EmitTodo(items []TodoItem) {
+	globalSink.Emit(Event{Kind: EvTodo, TodoItems: items})
+}

@@ -131,6 +131,21 @@ func (a *Agent) Loop(state *LoopState) bool {
 			return false
 		}
 
+		// ── Todo reminder injection ───────────────────────────────────────────
+		// Track whether the model used the todo tool this turn and, if not,
+		// inject a reminder after todoReminderInterval rounds without a plan update.
+		usedTodo := false
+		for _, block := range resp.Content {
+			if block.Type == "tool_use" && block.Name == "todo" {
+				usedTodo = true
+				break
+			}
+		}
+		tools.GlobalTodo.NoteRound(usedTodo)
+		if reminder := tools.GlobalTodo.Reminder(); reminder != "" {
+			toolResults = append(toolResults, anthropic.NewTextBlock(reminder))
+		}
+
 		state.Messages = append(state.Messages, anthropic.NewUserMessage(toolResults...))
 		state.TurnCount++
 		state.TransitionReason = "tool_result"

@@ -11,7 +11,15 @@ const (
 	EvSystem                     // Debug / status message
 	EvTokens                     // Token usage update
 	EvDone                       // Agent finished a turn
+	EvTodo                       // Session plan updated
 )
+
+// TodoItem is one entry in the session plan.
+type TodoItem struct {
+	Content    string
+	Status     string // "pending" | "in_progress" | "completed"
+	ActiveForm string // present-continuous label shown while in_progress
+}
 
 // Event is a union struct carrying data for any EventKind.
 type Event struct {
@@ -35,4 +43,7 @@ type Event struct {
 	OutputTokens int64
 	Model        string
 	StopReason   string
+
+	// EvTodo
+	TodoItems []TodoItem
 }

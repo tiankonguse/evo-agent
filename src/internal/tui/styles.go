@@ -85,4 +85,20 @@ var (
 	statusValueStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#161b22")).
 				Foreground(lipgloss.Color("#58a6ff"))
+
+	// ── Todo panel ────────────────────────────────────────────────────────────
+	todoBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#30363d")).
+			PaddingLeft(1).
+			PaddingRight(1)
+
+	todoHeaderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#58a6ff")).
+			Bold(true)
+
+	todoPendingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	todoInProgressStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Bold(true)
+	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
+	todoActiveFormStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681")).Italic(true)
 )

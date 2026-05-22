@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+
+	"evo-agent/internal/ui"
 )
 
 // renderBlock renders a single block into a string.
@@ -127,4 +129,62 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// renderTodoPanel renders the session plan as a compact bordered panel.
+// Returns "" when there are no items so callers can skip it cleanly.
+func renderTodoPanel(items []ui.TodoItem, width int) string {
+	if len(items) == 0 {
+		return ""
+	}
+
+	// Inner width excluding border + padding
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+
+	var lines []string
+	lines = append(lines, todoHeaderStyle.Render("▸ Session Plan"))
+
+	completed := 0
+	for _, item := range items {
+		var marker, styledLine string
+		switch item.Status {
+		case "completed":
+			completed++
+			marker = todoCompletedStyle.Render("[x]")
+			styledLine = todoCompletedStyle.Render(item.Content)
+		case "in_progress":
+			marker = todoInProgressStyle.Render("[>]")
+			styledLine = todoInProgressStyle.Render(item.Content)
+			if item.ActiveForm != "" {
+				styledLine += " " + todoActiveFormStyle.Render("("+item.ActiveForm+")")
+			}
+		default: // pending
+			marker = todoPendingStyle.Render("[ ]")
+			styledLine = todoPendingStyle.Render(item.Content)
+		}
+		lines = append(lines, fmt.Sprintf(" %s %s", marker, styledLine))
+	}
+
+	// Progress footer
+	progressBar := buildProgressBar(completed, len(items), innerW-20)
+	footer := todoActiveFormStyle.Render(
+		fmt.Sprintf("%s %d/%d completed", progressBar, completed, len(items)),
+	)
+	lines = append(lines, footer)
+
+	inner := strings.Join(lines, "\n")
+	return todoBorderStyle.Width(width - 2).Render(inner)
+}
+
+// buildProgressBar returns a simple ASCII progress bar of the given width.
+func buildProgressBar(done, total, width int) string {
+	if width < 4 || total == 0 {
+		return ""
+	}
+	filled := done * width / total
+	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
+	return bar
 }

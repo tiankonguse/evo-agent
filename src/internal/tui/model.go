@@ -44,6 +44,9 @@ type Model struct {
 
 	// Status bar info
 	info SidebarInfo
+
+	// Session plan items (updated via EvTodo)
+	todoItems []ui.TodoItem
 }
 
 // NewModel creates the initial TUI model.
@@ -220,6 +223,10 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		if e.Model != "" {
 			m.info.Model = e.Model
 		}
+
+	case ui.EvTodo:
+		// Store updated plan; View() will re-render it live
+		m.todoItems = e.TodoItems
 	}
 
 	return m, tea.Batch(cmds...)
@@ -240,6 +247,11 @@ func (m *Model) View() tea.View {
 	// Show any pending (in-flight) tool calls
 	for _, b := range m.pendingTools {
 		parts = append(parts, renderToolCall(b, w-2))
+	}
+
+	// Show session plan when items exist
+	if panel := renderTodoPanel(m.todoItems, w); panel != "" {
+		parts = append(parts, panel)
 	}
 
 	if m.busy {

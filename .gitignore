@@ -11,3 +11,5 @@ src/evo-agent
 .evo_agent/
 .evo-agent/
 evo-agent
+output/
+tetris-game/

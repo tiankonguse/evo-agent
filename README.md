@@ -14,6 +14,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **Context Compaction**: Three-layer strategy (placeholder micro-compact → LLM summarization → model-initiated compact) to handle unlimited-length sessions
 - **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo-agent/mcp.json`
 - **Skill System**: Two-layer on-demand knowledge — cheap catalog injected into system prompt; full skill body loaded only when needed via `load_skill`
+- **Session Planning (todo)**: Built-in `todo` tool lets the model maintain a live session plan (max 12 items, exactly one `in_progress` at a time); a 3-round reminder is injected when the plan goes stale; the TUI renders a real-time plan panel at the bottom
 
 ## Project Structure
 
@@ -40,7 +41,8 @@ src/
     │   ├── write_file.go      # write_file tool (write/create file with mkdir -p)
     │   ├── edit_file.go       # edit_file tool (exact-string replacement or create)
     │   ├── compact.go         # compact tool (model-initiated context compaction)
-    │   └── skill.go           # load_skill tool (load full skill body on demand)
+    │   ├── skill.go           # load_skill tool (load full skill body on demand)
+    │   └── todo.go            # todo tool (session plan, max 12 items, reminder injection)
     ├── tui/
     │   ├── run.go             # Run(): create Sink, start Bubble Tea program
     │   ├── model.go           # Bubble Tea Model: Init/Update/View, event handling
@@ -83,10 +85,10 @@ make build
 make test
 
 # Or run directly
-cd src && go run main.go
+./build/evo-agent            # TUI mode (default)
 
 # Plain-text mode (no TUI)
-cd src && go run main.go --plain
+./build/evo-agent --plain 
 ```
 
 ## Usage
@@ -123,6 +125,13 @@ After starting the agent, type your request at the prompt. The TUI renders outpu
                                                ← blank line
  🕐 2.1s                                       ← elapsed bar
 ────────────────────────────────────────────
+ ▸ Session Plan                                ← todo panel (live, bottom)
+ [x] Read existing files
+ [>] Refactor module  (Refactoring)
+ [ ] Add unit tests
+ [ ] Update docs
+ (1/4 completed)
+────────────────────────────────────────────
  >> [input area]
 ────────────────────────────────────────────
  tokens:1234/200000(0.6%)  model:…  agent:…  skills:3  tools:6  mcp:0
@@ -141,6 +150,7 @@ After starting the agent, type your request at the prompt. The TUI renders outpu
 | `edit_file`   | Replace an exact string in a file, or create a new file         |
 | `compact`     | Summarize the conversation history to free up context window; accepts an optional `focus` hint |
 | `load_skill`  | Load the full body of a named skill into context; use before acting on tasks that need specialized instructions |
+| `todo`        | Rewrite the current session plan (max 12 items, exactly one `in_progress`); refreshes the live TUI plan panel |
 
 ### MCP Tools
 
@@ -237,11 +247,16 @@ That's it — the tool is automatically available to the agent on next run.
 | [02-tools](blog/02-tools.md) | Tools — self-registering tool pattern and table-driven dispatch |
 | [03-prompts](blog/03-prompts.md) | Prompts & Context — system prompt, messages history, and the two-layer loop |
 | [04-compact](blog/04-compact.md) | Context Compaction — three-layer strategy for unlimited-length sessions |
+| [05-mcp](blog/05-mcp.md) | MCP Client — connect external tool servers via stdio, sse, streamableHttp |
+| [06-skill](blog/06-skill.md) | Skill System — two-layer on-demand knowledge injection |
+| [07-tui](blog/07-tui.md) | Bubble Tea TUI — inline non-fullscreen terminal UI with live status bar |
+| [08-todo](blog/08-todo.md) | Session Planning — todo tool, state constraints, reminder injection, TUI panel |
 
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.8.0** | Add session planning: `todo` tool (`todoManager`, max 12 items, single `in_progress` constraint, 3-round reminder injection); `EvTodo` event; live TUI plan panel (`renderTodoPanel`) |
 | **v0.7.0** | Add Bubble Tea TUI (`internal/tui`): inline (non-fullscreen) output, thinking/text/tool blocks with uniform spacing, bottom status bar (tokens/model/agent/skills/tools/MCP), `ctrl+enter` newline via bubbletea v2 + Kitty Protocol |
 | **v0.6.0** | Add two-layer skill system: `internal/skills` package (`Init`, `Catalog`, `Load`); `load_skill` tool in `tools/skill.go`; skill catalog auto-injected into system prompt; skills stored in `.evo-agent/skill/<name>/SKILL.md` |
 | **v0.5.0** | Add MCP client support: `stdio`, `sse`, and `streamableHttp` transports; config from `.evo-agent/mcp.json`; `InitMCP`/`ShutdownMCP` in `main.go`; MCP tools auto-merged into `Tools()` and routed in `Dispatch()` |

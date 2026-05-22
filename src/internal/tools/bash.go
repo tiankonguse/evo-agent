@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -35,6 +36,11 @@ func init() {
 
 // runBash executes a shell command and returns its combined output.
 // Execution is capped at 120 seconds.
+//
+// We put the bash process into its own process group (Setpgid) and override
+// cmd.Cancel to kill the entire group on timeout. This ensures background
+// processes spawned with "&" (which inherit the stdout/stderr pipes) are also
+// killed, preventing CombinedOutput from blocking forever waiting for pipe EOF.
 func runBash(command string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -42,6 +48,13 @@ func runBash(command string) string {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if cwd, err := os.Getwd(); err == nil {
 		cmd.Dir = cwd
+	}
+	// Place bash in its own process group so we can kill all descendants.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Override the default cancel (which only kills the direct child) to kill
+	// the entire process group, including any background ("&") grandchildren.
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 
 	out, err := cmd.CombinedOutput()

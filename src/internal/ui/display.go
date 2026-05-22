@@ -51,6 +51,21 @@ func (TerminalSink) Emit(e Event) {
 			ColorMagenta, e.Model, e.InputTokens, e.OutputTokens, e.StopReason, ColorReset)
 	case EvDone:
 		// nothing to print in plain mode
+	case EvTodo:
+		markers := map[string]string{
+			"pending":     "[ ]",
+			"in_progress": "[>]",
+			"completed":   "[x]",
+		}
+		fmt.Printf("%s── TODO ──%s\n", ColorMagenta, ColorReset)
+		for _, item := range e.TodoItems {
+			marker := markers[item.Status]
+			line := item.Content
+			if item.Status == "in_progress" && item.ActiveForm != "" {
+				line += " (" + item.ActiveForm + ")"
+			}
+			fmt.Printf("%s  %s %s%s\n", ColorMagenta, marker, line, ColorReset)
+		}
 	}
 }
 
@@ -60,3 +75,4 @@ func (TerminalSink) Emit(e Event) {
 type NopSink struct{}
 
 func (NopSink) Emit(Event) {}
+
