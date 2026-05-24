@@ -7,6 +7,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 ## Features
 
 - **Bubble Tea TUI**: Inline (non-fullscreen) terminal UI — thinking blocks, tool call results, and text responses rendered as uniform blocks with a live status bar at the bottom
+- **Slash Commands**: User-driven `/command` dispatch — type `/review`, `/deploy staging`, etc. for deterministic workflow triggers; supports shell-style arguments and template substitution (`$name`, `$0`, `$ARGUMENTS`)
 - **Multi-tool Support**: bash, read_file, write_file, edit_file, compact, load_skill — all self-registering via `init()`
 - **Self-registering Tool Pattern**: Adding a new tool only requires a single new file; no central registration needed
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
@@ -21,11 +22,11 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 
 ```
 src/
-├── main.go                    # Entry point: TUI/plain mode, MCP init/shutdown, skill catalog
+├── main.go                    # Entry point: TUI/plain mode, MCP init/shutdown, skill catalog, slash dispatch
 ├── go.mod
 └── internal/
     ├── agent/
-    │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run, RunQuery
+    │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run, RunQuery, RunQueryDirect
     │   ├── state.go           # LoopState, CompactState
     │   ├── compact.go         # MicroCompact, CompactHistory, SummarizeHistory, TrackRecentFile
     │   ├── subagent.go        # RunSubagent: isolated child agent, 30-turn cap, summary return
@@ -33,7 +34,10 @@ src/
     ├── config/
     │   └── config.go          # Config struct, LoadEnv, Load
     ├── skills/
-    │   └── registry.go        # SkillManifest, Init, Catalog, Load — two-layer skill system
+    │   ├── registry.go        # SkillManifest, Init, InitCommands, Catalog, Load, LookupForSlash
+    │   ├── dispatch.go        # Dispatch, SlashResult, SlashNames — slash command entry point
+    │   ├── args.go            # ParseArgs — shell-style argument splitting with quoting
+    │   └── render.go          # RenderBody — template substitution ($name, $N, $ARGUMENTS)
     ├── tools/
     │   ├── tool.go            # ToolDef registry, Register, Tools, ToolsExcept, Dispatch, GenerateSchema
     │   ├── executor.go        # Execute: iterate content blocks, run tool calls
@@ -227,6 +231,10 @@ Types: feat, fix, docs, refactor, test, chore
 |-------------------|---------------------------------------------------------|
 | `name`            | Skill identifier used with `load_skill`; falls back to the directory name if omitted |
 | `description`     | One-line summary shown in the system prompt catalog     |
+| `argument-hint`   | Hint shown in help for slash invocation (e.g. `[file]`) |
+| `arguments`       | Named positional args (space or comma separated) for `$name` substitution |
+| `user-invocable`  | Whether the user can invoke via `/slash` (default: `true`) |
+| `disable-model-invocation` | If `true`, excluded from catalog — only user can invoke via `/slash` |
 
 The `load_skill` output includes the absolute path to `SKILL.md` so the model can reference sibling files in the same directory:
 
@@ -234,6 +242,61 @@ The `load_skill` output includes the absolute path to `SKILL.md` so the model ca
 <skill name="git-commit" path="/workspace/.evo-agent/skill/git-commit/SKILL.md">
 ...body...
 </skill>
+```
+
+### Slash Commands
+
+Slash commands provide **user-driven deterministic dispatch** — type `/name` in the input box to trigger a specific workflow without waiting for the LLM to decide.
+
+Commands are stored as flat Markdown files in `.evo-agent/command/`:
+
+```
+.evo-agent/command/
+├── review.md
+├── deploy.md
+└── hello.md
+```
+
+Each `.md` file uses the same frontmatter format as skills:
+
+```markdown
+---
+name: hello
+argument-hint: [name]
+arguments: name
+user-invocable: true
+---
+
+Say hello to $name in a friendly way.
+```
+
+**Argument substitution** — the command body supports template placeholders:
+
+| Placeholder       | Description                                  |
+|-------------------|----------------------------------------------|
+| `$name`           | Named positional argument (from `arguments` frontmatter) |
+| `$0`, `$1`, ...   | Positional argument by index                 |
+| `$ARGUMENTS[N]`  | Explicit indexed argument                    |
+| `$ARGUMENTS`      | Full raw argument string                     |
+
+If no placeholder is present in the body, `ARGUMENTS: <raw>` is automatically appended.
+
+**Dispatch priority**: commands take priority over skills when the same name exists in both.
+
+**Key differences from skills:**
+
+| | Skill | Command |
+|---|---|---|
+| Trigger | LLM calls `load_skill` autonomously | User types `/name` explicitly |
+| In system prompt catalog | Yes (unless disabled) | Never |
+| Storage | `.evo-agent/skill/<name>/SKILL.md` | `.evo-agent/command/<name>.md` |
+| Determinism | LLM decides when to load | User decides when to invoke |
+
+Usage examples:
+```
+/review src/main.go          ← trigger code review workflow
+/deploy staging              ← trigger deployment
+/hello World                 ← $name → "World"
 ```
 
 ## Adding a New Tool
@@ -257,11 +320,13 @@ That's it — the tool is automatically available to the agent on next run.
 | [07-tui](blog/07-tui.md) | Bubble Tea TUI — inline non-fullscreen terminal UI with live status bar |
 | [08-todo](blog/08-todo.md) | Session Planning — todo tool, state constraints, reminder injection, TUI panel |
 | [09-subagent](blog/09-subagent.md) | Subagent — task tool, isolated child agent, import-cycle avoidance, no recursive spawning |
+| [10-command](blog/10-command.md) | Slash Commands — user-driven deterministic dispatch, command vs skill design, argument substitution |
 
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.10.0** | Add slash command system: `Dispatch()` intercepts `/name` input; `InitCommands()` loads `.evo-agent/command/*.md`; shell-style `ParseArgs` with quoting; `RenderBody` template substitution (`$name`, `$0`, `$ARGUMENTS[N]`, `$ARGUMENTS`); commands take priority over skills; `RunQueryDirect` bypasses normal input processing |
 | **v0.9.0** | Add subagent: `task` tool (`task.go`, `RegisterSubagentRunner`), `RunSubagent()` in `subagent.go` (30-turn isolated child agent), `ToolsExcept()` helper, `PersistLargeOutput` exported; `agent.New()` injects subagent runner |
 | **v0.8.0** | Add session planning: `todo` tool (`todoManager`, max 12 items, single `in_progress` constraint, 3-round reminder injection); `EvTodo` event; live TUI plan panel (`renderTodoPanel`) |
 | **v0.7.0** | Add Bubble Tea TUI (`internal/tui`): inline (non-fullscreen) output, thinking/text/tool blocks with uniform spacing, bottom status bar (tokens/model/agent/skills/tools/MCP), `ctrl+enter` newline via bubbletea v2 + Kitty Protocol |

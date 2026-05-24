@@ -16,6 +16,7 @@ type SidebarInfo struct {
 	ContextLimit int64
 
 	Skills     []string
+	Commands   []string // command names (from .evo-agent/command/)
 	Tools      []string
 	MCPServers []string // MCP server names only
 }

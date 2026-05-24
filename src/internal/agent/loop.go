@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"evo-agent/internal/config"
+	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 	"evo-agent/internal/ui"
 )
@@ -176,9 +177,25 @@ func (a *Agent) Run(r io.Reader) {
 			break
 		}
 
-		history = append(history, anthropic.NewUserMessage(
-			anthropic.NewTextBlock(query),
-		))
+		// ── Slash command interception ──
+		if result := skills.Dispatch(query); result.Found {
+			if result.Content != "" {
+				// Two-block message: prompt + skill content
+				history = append(history, anthropic.NewUserMessage(
+					anthropic.NewTextBlock(result.Prompt),
+					anthropic.NewTextBlock(result.Content),
+				))
+			} else {
+				// Error case (unknown command): single block
+				history = append(history, anthropic.NewUserMessage(
+					anthropic.NewTextBlock(result.Prompt),
+				))
+			}
+		} else {
+			history = append(history, anthropic.NewUserMessage(
+				anthropic.NewTextBlock(query),
+			))
+		}
 
 		state := &LoopState{
 			Messages:     history,
@@ -210,6 +227,22 @@ func (a *Agent) RunQuery(query string, history *[]anthropic.MessageParam, compac
 		anthropic.NewTextBlock(query),
 	))
 
+	state := &LoopState{
+		Messages:     *history,
+		TurnCount:    1,
+		CompactState: *compactState,
+	}
+	a.Loop(state)
+	*history = state.Messages
+	*compactState = state.CompactState
+
+	close(doneCh)
+}
+
+// RunQueryDirect executes the agent loop without appending a new message.
+// The caller has already appended the user message(s) to history.
+// Used by slash command handling where multi-block messages are constructed.
+func (a *Agent) RunQueryDirect(history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
 	state := &LoopState{
 		Messages:     *history,
 		TurnCount:    1,

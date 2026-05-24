@@ -2,12 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 
+	"evo-agent/internal/skills"
 	"evo-agent/internal/ui"
 )
 
@@ -47,6 +49,12 @@ type Model struct {
 
 	// Session plan items (updated via EvTodo)
 	todoItems []ui.TodoItem
+
+	// Slash command completion
+	completionActive bool     // dropdown is visible
+	completionItems  []string // filtered list of matching names
+	completionIdx    int      // currently highlighted index (0-based)
+	allSlashNames    []string // full list: skills + commands
 }
 
 // NewModel creates the initial TUI model.
@@ -62,11 +70,18 @@ func NewModel(info SidebarInfo, queryCh chan<- string, eventCh <-chan ui.Event) 
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+enter", "alt+enter")
 
+	// Merge skills + commands into a sorted list for autocomplete
+	allNames := make([]string, 0, len(info.Skills)+len(info.Commands))
+	allNames = append(allNames, info.Skills...)
+	allNames = append(allNames, info.Commands...)
+	sort.Strings(allNames)
+
 	return Model{
-		textarea: ta,
-		info:     info,
-		queryCh:  queryCh,
-		eventCh:  eventCh,
+		textarea:      ta,
+		info:          info,
+		queryCh:       queryCh,
+		eventCh:       eventCh,
+		allSlashNames: allNames,
 	}
 }
 
@@ -129,6 +144,59 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if !m.busy {
 			var cmd tea.Cmd
 			m.textarea, cmd = m.textarea.Update(msg)
+			m.updateCompletion()
+			return m, cmd
+		}
+		return m, nil
+
+	case "escape":
+		if m.completionActive {
+			m.completionActive = false
+			return m, nil
+		}
+		return m, nil
+
+	case "up":
+		if m.completionActive && len(m.completionItems) > 0 {
+			m.completionIdx--
+			if m.completionIdx < 0 {
+				m.completionIdx = len(m.completionItems) - 1
+			}
+			return m, nil
+		}
+		if !m.busy {
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case "down":
+		if m.completionActive && len(m.completionItems) > 0 {
+			m.completionIdx++
+			if m.completionIdx >= len(m.completionItems) {
+				m.completionIdx = 0
+			}
+			return m, nil
+		}
+		if !m.busy {
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case "tab":
+		if m.completionActive && len(m.completionItems) > 0 {
+			selected := m.completionItems[m.completionIdx]
+			m.textarea.SetValue("/" + selected + " ")
+			m.completionActive = false
+			return m, nil
+		}
+		if !m.busy {
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(msg)
+			m.updateCompletion()
 			return m, cmd
 		}
 		return m, nil
@@ -137,6 +205,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
+		// If completion active, accept selection
+		if m.completionActive && len(m.completionItems) > 0 {
+			selected := m.completionItems[m.completionIdx]
+			m.textarea.SetValue("/" + selected + " ")
+			m.completionActive = false
+			return m, nil
+		}
+		// Otherwise submit the query
 		query := strings.TrimSpace(m.textarea.Value())
 		if query == "" {
 			return m, nil
@@ -146,6 +222,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.textarea.Reset()
 		m.busy = true
+		m.completionActive = false
 		m.queryStartTime = time.Now()
 		// Print user message permanently into scroll buffer
 		w := m.width
@@ -161,6 +238,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if !m.busy {
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
+		m.updateCompletion()
 		return m, cmd
 	}
 	return m, nil
@@ -254,6 +332,11 @@ func (m *Model) View() tea.View {
 		parts = append(parts, panel)
 	}
 
+	// Show completion dropdown when active
+	if panel := m.renderCompletion(w); panel != "" {
+		parts = append(parts, panel)
+	}
+
 	if m.busy {
 		parts = append(parts, inputBusyStyle.Render(spinnerFrame()+" Thinking…"))
 	}
@@ -296,6 +379,98 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// ── Completion ───────────────────────────────────────────────────────────
+
+// updateCompletion checks the textarea value and shows/hides the completion dropdown.
+func (m *Model) updateCompletion() {
+	val := m.textarea.Value()
+
+	// Must start with "/" and not be busy
+	if m.busy || len(val) == 0 || val[0] != '/' {
+		m.completionActive = false
+		return
+	}
+
+	// Extract the prefix after "/" (up to first space)
+	rest := val[1:]
+	if idx := strings.IndexByte(rest, ' '); idx >= 0 {
+		// User is already typing args — dismiss completion
+		m.completionActive = false
+		return
+	}
+
+	// Filter allSlashNames by prefix
+	prefix := strings.ToLower(rest)
+	var filtered []string
+	for _, name := range m.allSlashNames {
+		if strings.HasPrefix(strings.ToLower(name), prefix) {
+			filtered = append(filtered, name)
+		}
+	}
+
+	if len(filtered) == 0 {
+		m.completionActive = false
+		return
+	}
+
+	m.completionActive = true
+	m.completionItems = filtered
+	// Reset index if out of bounds
+	if m.completionIdx >= len(filtered) {
+		m.completionIdx = 0
+	}
+}
+
+// renderCompletion renders the autocomplete dropdown panel.
+func (m *Model) renderCompletion(w int) string {
+	if !m.completionActive || len(m.completionItems) == 0 {
+		return ""
+	}
+
+	maxShow := 8
+	items := m.completionItems
+	if len(items) > maxShow {
+		items = items[:maxShow]
+	}
+
+	innerW := w - 4
+	if innerW < 20 {
+		innerW = 20
+	}
+
+	var lines []string
+	for i, name := range items {
+		manifest := skills.GetManifest(name)
+		hint := ""
+		if manifest.ArgumentHint != "" {
+			hint = " " + manifest.ArgumentHint
+		}
+		desc := manifest.Description
+		maxDesc := innerW - len(name) - len(hint) - 6
+		if maxDesc > 0 && len(desc) > maxDesc {
+			desc = desc[:maxDesc-1] + "…"
+		} else if maxDesc <= 0 {
+			desc = ""
+		}
+
+		line := fmt.Sprintf("  /%s%s  %s", name, hint, desc)
+		if i == m.completionIdx {
+			line = completionSelectedStyle.Width(innerW).Render(line)
+		} else {
+			line = completionItemStyle.Width(innerW).Render(line)
+		}
+		lines = append(lines, line)
+	}
+
+	if len(m.completionItems) > maxShow {
+		more := fmt.Sprintf("  … %d more", len(m.completionItems)-maxShow)
+		lines = append(lines, completionItemStyle.Render(more))
+	}
+
+	inner := strings.Join(lines, "\n")
+	return completionBorderStyle.Width(w - 2).Render(inner)
+}
+
 // ── Spinner ───────────────────────────────────────────────────────────────────
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -306,6 +481,3 @@ func spinnerFrame() string {
 	spinnerIdx++
 	return f
 }
-
-// keep fmt used
-var _ = fmt.Sprintf

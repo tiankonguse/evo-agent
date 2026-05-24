@@ -101,4 +101,19 @@ var (
 	todoInProgressStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Bold(true)
 	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
 	todoActiveFormStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681")).Italic(true)
+
+	// ── Completion dropdown ──────────────────────────────────────────────────
+	completionBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("#58a6ff")).
+				PaddingLeft(0).
+				PaddingRight(0)
+
+	completionSelectedStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1f6feb")).
+				Foreground(lipgloss.Color("#ffffff")).
+				Bold(true)
+
+	completionItemStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#c9d1d9"))
 )

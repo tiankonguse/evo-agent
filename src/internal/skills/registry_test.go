@@ -52,7 +52,8 @@ func TestInitCatalogLoad(t *testing.T) {
 	defer os.Chdir(orig)
 
 	// Reset global state
-	documents = map[string]skillDocument{}
+	skillDocuments = map[string]skillDocument{}
+	commandDocuments = map[string]skillDocument{}
 	Init()
 
 	catalog := Catalog()
@@ -84,7 +85,8 @@ func TestInitCatalogLoad(t *testing.T) {
 }
 
 func TestCatalogEmpty(t *testing.T) {
-	documents = map[string]skillDocument{}
+	skillDocuments = map[string]skillDocument{}
+	commandDocuments = map[string]skillDocument{}
 	if catalog := Catalog(); catalog != "" {
 		t.Errorf("Catalog() = %q, want empty string when no skills loaded", catalog)
 	}

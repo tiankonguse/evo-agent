@@ -62,6 +62,15 @@ func main() {
 			"\nUse load_skill when a task needs specialized instructions before you act."
 	}
 
+	// Slash command introduction
+	slashNames := skills.SlashNames()
+	if len(slashNames) > 0 {
+		cfg.SystemMsg += "\n\nSlash commands: /<skill-name> (e.g., /git-commit) is shorthand for users " +
+			"to invoke a skill. When executed, the skill content is expanded into a full prompt. " +
+			"Use the load_skill tool to load skills programmatically. " +
+			"IMPORTANT: Only use load_skill for skills listed above - do not guess or invent skill names."
+	}
+
 	a := agent.New(&client, cfg)
 
 	if *plain {
@@ -84,6 +93,7 @@ func main() {
 	toolNames := builtinToolNames()
 	mcpServers := mcpServerNames()
 	skillNames := skillList()
+	commandNames := skills.CommandNames()
 
 	info := tui.SidebarInfo{
 		AgentName:    agentName,
@@ -93,6 +103,7 @@ func main() {
 		Provider:     provider,
 		ContextLimit: contextLimit,
 		Skills:       skillNames,
+		Commands:     commandNames,
 		Tools:        toolNames,
 		MCPServers:   mcpServers,
 	}
@@ -105,6 +116,26 @@ func main() {
 		var history []anthropic.MessageParam
 		compactState := &agent.CompactState{}
 		for query := range queryCh {
+			// ── Slash command interception ──
+			if result := skills.Dispatch(query); result.Found {
+				if result.Content != "" {
+					// Two-block message: prompt + skill content
+					history = append(history, anthropic.NewUserMessage(
+						anthropic.NewTextBlock(result.Prompt),
+						anthropic.NewTextBlock(result.Content),
+					))
+				} else {
+					// Error case (unknown command): single block
+					history = append(history, anthropic.NewUserMessage(
+						anthropic.NewTextBlock(result.Prompt),
+					))
+				}
+				doneCh := make(chan struct{})
+				a.RunQueryDirect(&history, &compactState, doneCh)
+				<-doneCh
+				ui.PrintDone()
+				continue
+			}
 			doneCh := make(chan struct{})
 			a.RunQuery(query, &history, &compactState, doneCh)
 			<-doneCh
