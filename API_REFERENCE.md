@@ -77,6 +77,22 @@ Modifies `state` in place.
 
 ---
 
+### `func (a *Agent) RunSubagent(prompt string) string`
+
+Spawns an isolated child agent to complete `prompt`. The child:
+
+- Starts with a fresh `messages` slice (no parent history).
+- Uses `ToolsExcept("task")` — `task` is stripped to prevent recursive spawning.
+- Appends `"\nYou are a subagent. Complete the given task…"` to the system prompt.
+- Runs for up to `subagentMaxTurns` (30) turns.
+- Returns the last text block produced; returns `"(no summary)"` if the child emits no text.
+
+The child's message history is local to `RunSubagent` and is GC'd on return. All tool calls inside the child go through `tools.Dispatch` and `tools.PersistLargeOutput` identically to the parent loop.
+
+Called exclusively via the `subagentRunner` callback registered in `tools/task.go`.
+
+---
+
 ## internal/agent — compaction
 
 ### Constants
@@ -176,6 +192,12 @@ Returns all registered tool schemas plus MCP tool schemas, ready to pass to the 
 
 ---
 
+### `func ToolsExcept(names ...string) []anthropic.ToolUnionParam`
+
+Like `Tools()` but omits the named tools from the result. Used by `RunSubagent` to strip the `task` tool and prevent recursive subagent spawning.
+
+---
+
 ### `func Dispatch(name string, input json.RawMessage) (string, error)`
 
 Routes the call to the correct handler:
@@ -189,6 +211,18 @@ Returns `("", nil)` if the tool is not found.
 ### `func GenerateSchema[T any]() anthropic.ToolInputSchemaParam`
 
 Uses reflection (`invopop/jsonschema`) to build an `anthropic.ToolInputSchemaParam` from a Go struct. Annotate fields with `jsonschema_description:"..."` to provide descriptions.
+
+---
+
+### `func PersistLargeOutput(id, output string) string`
+
+If `output` exceeds `persistThreshold` (30 000 chars), writes it to `.evo-agent/tool-results/<id>.txt` and returns a 2 000-char preview placeholder. Otherwise returns `output` unchanged. Called in both the parent executor (`executor.go`) and child subagent (`subagent.go`).
+
+---
+
+### `func RegisterSubagentRunner(fn func(prompt string) string)`
+
+Registers the callback used by the `task` tool to spawn subagents. Called once by `agent.New()` at startup to inject `Agent.RunSubagent`. Uses a private package-level variable to avoid an `agent` → `tools` import cycle.
 
 ---
 
@@ -295,6 +329,27 @@ Loads the full body of the named skill from the skill registry. Returns the skil
 ```
 
 Returns a human-readable error string (containing `"Error"`) when the skill name is not found, along with the list of known skill names.
+
+---
+
+### Tool: `task`
+
+```go
+type TaskInput struct {
+    Prompt      string `json:"prompt"`
+    Description string `json:"description"`
+}
+```
+
+Spawns a subagent with a fresh, isolated context to complete `prompt`. `description` is a one-line summary shown in the UI during execution.
+
+- The subagent shares the filesystem but not conversation history.
+- The `task` tool is stripped from the child's tool list (no recursive spawning).
+- Hard cap: 30 turns per invocation (`subagentMaxTurns`).
+- Returns the last text block produced by the child as a plain string summary.
+- Returns `"(no summary)"` if the child produces no text output.
+
+The handler calls the `subagentRunner` callback registered by `RegisterSubagentRunner`. Returns `"Error: subagent runner not initialized"` if called before `agent.New()`.
 
 ---
 

@@ -22,8 +22,13 @@ type Agent struct {
 }
 
 // New creates an Agent with the given LLM client and configuration.
+// It also wires up tools.SubagentRunner so the task tool can spawn child agents.
 func New(client *anthropic.Client, cfg *config.Config) *Agent {
-	return &Agent{client: client, cfg: cfg}
+	a := &Agent{client: client, cfg: cfg}
+	tools.RegisterSubagentRunner(func(prompt string) string {
+		return a.RunSubagent(prompt)
+	})
+	return a
 }
 
 // autoCompact applies MicroCompact, then triggers a full LLM summarization if

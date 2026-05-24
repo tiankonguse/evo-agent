@@ -12,9 +12,9 @@ const (
 	toolResultsDir   = ".evo-agent/tool-results"
 )
 
-// persistLargeOutput saves output exceeding the threshold to disk and returns
+// PersistLargeOutput saves output exceeding the threshold to disk and returns
 // a short preview placeholder. Falls back to in-memory truncation on error.
-func persistLargeOutput(toolID, output string) string {
+func PersistLargeOutput(toolID, output string) string {
 	if len(output) <= persistThreshold {
 		return output
 	}

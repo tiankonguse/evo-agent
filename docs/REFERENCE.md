@@ -20,6 +20,7 @@ See `CLAUDE.md` for the high-level architecture overview.
 | `todoMaxItems` | 12 | `tools/todo.go` | Max session-plan entries |
 | `todoReminderInterval` | 3 rounds | `tools/todo.go` | Rounds before reminder injected |
 | `MaxTokens` | 8 000 | `agent/loop.go` | Per-request output token budget |
+| `subagentMaxTurns` | 30 | `agent/subagent.go` | Max turns per subagent invocation |
 
 ---
 
@@ -28,11 +29,12 @@ See `CLAUDE.md` for the high-level architecture overview.
 | File | ~LOC | Responsibility |
 |------|------|----------------|
 | `src/main.go` | 60 | Entry point, flag parsing, TUI vs plain dispatch |
-| `src/internal/agent/loop.go` | 220 | Agent loop, auto-compact, todo reminder, manual compact |
+| `src/internal/agent/loop.go` | 224 | Agent loop, auto-compact, todo reminder, manual compact, `New()` wires subagent |
 | `src/internal/agent/compact.go` | 260 | MicroCompact, CompactHistory, LLM summarizer |
 | `src/internal/agent/state.go` | 25 | `LoopState`, `CompactState` structs |
+| `src/internal/agent/subagent.go` | 85 | `RunSubagent()` — isolated child agent, 30-turn cap, summary return |
 | `src/internal/agent/transcripts.go` | 80 | Write/read JSONL transcripts |
-| `src/internal/tools/tool.go` | 70 | `ToolDef`, `Register`, `Dispatch`, `Tools()` |
+| `src/internal/tools/tool.go` | 95 | `ToolDef`, `Register`, `Dispatch`, `Tools()`, `ToolsExcept()` |
 | `src/internal/tools/executor.go` | 60 | `Execute()` — iterates content blocks, emits UI events |
 | `src/internal/tools/mcp.go` | 710 | Full MCP client: stdio, SSE, streamableHTTP |
 | `src/internal/tools/todo.go` | 120 | `todoManager`, `GlobalTodo`, reminder logic, EvTodo emit |
@@ -40,6 +42,7 @@ See `CLAUDE.md` for the high-level architecture overview.
 | `src/internal/tools/read_file.go` | 60 | read_file tool |
 | `src/internal/tools/write_file.go` | 45 | write_file tool (auto mkdir -p) |
 | `src/internal/tools/edit_file.go` | 70 | edit_file tool (exact-string replace) |
+| `src/internal/tools/task.go` | 47 | `task` tool registration, `subagentRunner` var, `RegisterSubagentRunner()` |
 | `src/internal/tools/skill.go` | 35 | load_skill tool |
 | `src/internal/tools/compact.go` | 10 | compact tool registration |
 | `src/internal/tools/persist.go` | 45 | Large output persistence |
@@ -140,7 +143,7 @@ main()
   ├─ skills.Init()                // walks .evo-agent/skill/**/SKILL.md
   ├─ cfg.SystemMsg += Catalog()   // injects skill list into system prompt
   ├─ client := anthropic.NewClient(opts...)
-  ├─ ag := agent.New(client, cfg)
+  ├─ ag := agent.New(client, cfg) // also calls tools.RegisterSubagentRunner(ag.RunSubagent)
   └─ if --plain:
        ag.Run(os.Stdin)           // blocking ANSI REPL
      else:
@@ -294,6 +297,56 @@ Common startup messages to watch:
 - `[MCP] ... error ...` — MCP server failed (agent still runs)
 - `[Skills] Loaded N skill(s)` — skills OK
 - `[auto compact triggered: N chars]` — context was compacted
+
+---
+
+## Subagent (task tool)
+
+The `task` tool lets the model spawn a child agent with a fresh, isolated context.  
+Only a text summary is returned to the parent; the child's full message history is discarded.
+
+### How it works
+
+```
+Parent Loop                          RunSubagent(prompt)
+─────────────────────────────────    ─────────────────────────────────────────
+tool_use { name:"task",          →   messages = [NewUserMessage(prompt)]
+           prompt: "..." }           childTools = ToolsExcept("task")  // no recursion
+                                     for turn := 0; turn < 30; turn++:
+                                         LLM call (fresh context)
+                                         Execute tools (Dispatch)
+                                         if no tool_use: break
+tool_result { content: "summary" } ← return lastTextBlock
+```
+
+### Key APIs
+
+| Symbol | Package | Purpose |
+|--------|---------|---------|
+| `RegisterSubagentRunner(fn)` | `tools` | Injects the subagent runner (called by `agent.New`) |
+| `ToolsExcept(names...)` | `tools` | Returns all tool schemas minus the named ones |
+| `PersistLargeOutput(id, out)` | `tools` | Persists large outputs; called inside subagent |
+| `RunSubagent(prompt)` | `agent` | Spawns child, runs up to 30 turns, returns summary |
+
+### Import-cycle avoidance
+
+`agent` imports `tools`. To let the `task` tool (in `tools`) call `RunSubagent` (in `agent`), a private function variable is used:
+
+```go
+// tools/task.go
+var subagentRunner func(prompt string) string
+func RegisterSubagentRunner(fn func(prompt string) string) { subagentRunner = fn }
+
+// agent/loop.go — called once at startup
+tools.RegisterSubagentRunner(func(prompt string) string { return a.RunSubagent(prompt) })
+```
+
+### Constraints
+
+- **No recursion**: `ToolsExcept("task")` strips the `task` tool from child tool list.
+- **Max 30 turns**: `subagentMaxTurns = 30` hard cap per subagent invocation.
+- **Context isolation**: child `messages` slice is local to `RunSubagent`; GC'd on return.
+- **Summary only**: parent receives the last text block produced by the child.
 
 ---
 

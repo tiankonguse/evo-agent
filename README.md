@@ -15,6 +15,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo-agent/mcp.json`
 - **Skill System**: Two-layer on-demand knowledge — cheap catalog injected into system prompt; full skill body loaded only when needed via `load_skill`
 - **Session Planning (todo)**: Built-in `todo` tool lets the model maintain a live session plan (max 12 items, exactly one `in_progress` at a time); a 3-round reminder is injected when the plan goes stale; the TUI renders a real-time plan panel at the bottom
+- **Subagent (task tool)**: `task` tool spawns an isolated child agent with a fresh context to delegate complex subtasks; child shares the filesystem but not conversation history; only a text summary is returned to the parent; recursive spawning is prevented by stripping `task` from child's tool list; hard cap of 30 turns per subagent
 
 ## Project Structure
 
@@ -27,14 +28,16 @@ src/
     │   ├── loop.go            # Agent struct, RunOneTurn, Loop, Run, RunQuery
     │   ├── state.go           # LoopState, CompactState
     │   ├── compact.go         # MicroCompact, CompactHistory, SummarizeHistory, TrackRecentFile
+    │   ├── subagent.go        # RunSubagent: isolated child agent, 30-turn cap, summary return
     │   └── transcripts.go     # WriteTranscript: save full history to .evo-agent/transcripts/
     ├── config/
     │   └── config.go          # Config struct, LoadEnv, Load
     ├── skills/
     │   └── registry.go        # SkillManifest, Init, Catalog, Load — two-layer skill system
     ├── tools/
-    │   ├── tool.go            # ToolDef registry, Register, Tools, Dispatch, GenerateSchema
+    │   ├── tool.go            # ToolDef registry, Register, Tools, ToolsExcept, Dispatch, GenerateSchema
     │   ├── executor.go        # Execute: iterate content blocks, run tool calls
+    │   ├── persist.go         # PersistLargeOutput: save large outputs to disk, return preview
     │   ├── mcp.go             # MCP client: stdio / sse / streamableHttp transports, InitMCP, ShutdownMCP
     │   ├── bash.go            # bash tool (run shell commands, 120s timeout)
     │   ├── read_file.go       # read_file tool (read file with optional line limit)
@@ -42,7 +45,8 @@ src/
     │   ├── edit_file.go       # edit_file tool (exact-string replacement or create)
     │   ├── compact.go         # compact tool (model-initiated context compaction)
     │   ├── skill.go           # load_skill tool (load full skill body on demand)
-    │   └── todo.go            # todo tool (session plan, max 12 items, reminder injection)
+    │   ├── todo.go            # todo tool (session plan, max 12 items, reminder injection)
+    │   └── task.go            # task tool (spawn subagent), RegisterSubagentRunner callback
     ├── tui/
     │   ├── run.go             # Run(): create Sink, start Bubble Tea program
     │   ├── model.go           # Bubble Tea Model: Init/Update/View, event handling
@@ -151,6 +155,7 @@ After starting the agent, type your request at the prompt. The TUI renders outpu
 | `compact`     | Summarize the conversation history to free up context window; accepts an optional `focus` hint |
 | `load_skill`  | Load the full body of a named skill into context; use before acting on tasks that need specialized instructions |
 | `todo`        | Rewrite the current session plan (max 12 items, exactly one `in_progress`); refreshes the live TUI plan panel |
+| `task`        | Spawn a subagent with fresh context to complete a subtask; shares filesystem but not history; returns a text summary; max 30 turns |
 
 ### MCP Tools
 
@@ -251,11 +256,13 @@ That's it — the tool is automatically available to the agent on next run.
 | [06-skill](blog/06-skill.md) | Skill System — two-layer on-demand knowledge injection |
 | [07-tui](blog/07-tui.md) | Bubble Tea TUI — inline non-fullscreen terminal UI with live status bar |
 | [08-todo](blog/08-todo.md) | Session Planning — todo tool, state constraints, reminder injection, TUI panel |
+| [09-subagent](blog/09-subagent.md) | Subagent — task tool, isolated child agent, import-cycle avoidance, no recursive spawning |
 
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.9.0** | Add subagent: `task` tool (`task.go`, `RegisterSubagentRunner`), `RunSubagent()` in `subagent.go` (30-turn isolated child agent), `ToolsExcept()` helper, `PersistLargeOutput` exported; `agent.New()` injects subagent runner |
 | **v0.8.0** | Add session planning: `todo` tool (`todoManager`, max 12 items, single `in_progress` constraint, 3-round reminder injection); `EvTodo` event; live TUI plan panel (`renderTodoPanel`) |
 | **v0.7.0** | Add Bubble Tea TUI (`internal/tui`): inline (non-fullscreen) output, thinking/text/tool blocks with uniform spacing, bottom status bar (tokens/model/agent/skills/tools/MCP), `ctrl+enter` newline via bubbletea v2 + Kitty Protocol |
 | **v0.6.0** | Add two-layer skill system: `internal/skills` package (`Init`, `Catalog`, `Load`); `load_skill` tool in `tools/skill.go`; skill catalog auto-injected into system prompt; skills stored in `.evo-agent/skill/<name>/SKILL.md` |

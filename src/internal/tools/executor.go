@@ -37,7 +37,7 @@ func Execute(content []anthropic.ContentBlockUnion, compactState interface{}) []
 				isError = true
 				ui.PrintError(fmt.Sprintf("Error: %v", err))
 			} else {
-				output = persistLargeOutput(v.ID, output)
+				output = PersistLargeOutput(v.ID, output)
 			}
 
 			ui.PrintToolResult(v.ID, output, isError)

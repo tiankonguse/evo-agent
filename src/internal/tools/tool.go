@@ -61,6 +61,24 @@ func RegistryNames() []string {
 	return names
 }
 
+// ToolsExcept returns all registered tool schemas excluding those named in exclude.
+// Used by subagents to prevent recursive spawning (e.g. exclude "task").
+func ToolsExcept(exclude ...string) []anthropic.ToolUnionParam {
+	skip := make(map[string]bool, len(exclude))
+	for _, n := range exclude {
+		skip[n] = true
+	}
+	all := Tools()
+	out := make([]anthropic.ToolUnionParam, 0, len(all))
+	for _, t := range all {
+		if t.OfTool != nil && skip[t.OfTool.Name] {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // GenerateSchema uses reflection to build a ToolInputSchemaParam from a Go struct.
 // Annotate fields with `jsonschema_description:"..."` to add descriptions.
 func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {

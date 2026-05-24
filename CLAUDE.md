@@ -49,7 +49,7 @@ make clean
 src/          Go module root (module name: evo-agent)
   main.go     Entry point: flag parsing, config, MCP init, TUI vs plain dispatch
   internal/
-    agent/    LLM loop, context compaction
+    agent/    LLM loop, context compaction, subagent
     config/   Env-var configuration
     skills/   Prompt-injection skill catalog
     tools/    Tool registry + all built-in tools
@@ -74,7 +74,7 @@ build/        Compiled binary output
 
 **Self-registering pattern**: every tool file has an `init()` that calls `Register(ToolDef{...})`. `Dispatch(name, input)` routes calls by name. `Tools()` returns all registered + MCP schemas for the API call.
 
-Built-in tools: `bash`, `read_file`, `edit_file`, `write_file`, `compact`, `skill`, `todo`.
+Built-in tools: `bash`, `read_file`, `edit_file`, `write_file`, `compact`, `skill`, `todo`, `task`.
 
 Large tool outputs (>30 000 chars) are persisted to `.evo-agent/tool-results/<id>.txt`; a 2 000-char preview placeholder is returned to the model instead.
 
@@ -83,6 +83,12 @@ Large tool outputs (>30 000 chars) are persisted to `.evo-agent/tool-results/<id
 ### Session planning (`internal/tools/todo.go`)
 
 `GlobalTodo *todoManager` is a package-level singleton. The `todo` tool lets the model maintain a session plan (max 12 items, exactly 1 `in_progress` at a time). After each update, the handler emits `ui.EvTodo` so the TUI re-renders the live plan panel. `NoteRound(usedTodo bool)` / `Reminder()` implement the 3-round reminder interval injected in `agent.Loop`.
+
+### Subagent (`internal/agent/subagent.go` + `internal/tools/task.go`)
+
+The `task` tool lets the model delegate work to a child agent with fresh, isolated context. `RunSubagent(prompt)` drives a sub-loop (max 30 turns) using `ToolsExcept("task")` — the `task` tool is stripped to prevent recursive spawning. Only the last text block is returned to the parent; the child message history is GC'd on return.
+
+**Import-cycle avoidance**: `agent` imports `tools`, so `tools/task.go` holds a private `subagentRunner` callback set via `RegisterSubagentRunner()`. `agent.New()` injects `ag.RunSubagent` at startup — the same pattern used by `GlobalTodo`.
 
 ### UI event bus (`internal/ui/`)
 

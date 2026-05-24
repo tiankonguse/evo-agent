@@ -19,7 +19,7 @@ import (
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.8.0"
+	agentVersion = "0.9.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
 
