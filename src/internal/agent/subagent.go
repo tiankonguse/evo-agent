@@ -13,16 +13,15 @@ import (
 
 const subagentMaxTurns = 30
 
-// RunSubagent spawns a child agent with a fresh message history.
+// RunSubagent spawns a child agent with the given system prompt and messages.
 // The child receives all tools except "task" to prevent recursive spawning.
 // Only the final text block is returned to the parent; the child context is discarded.
-func (a *Agent) RunSubagent(prompt string) string {
-	subMessages := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-	}
+func (a *Agent) RunSubagent(systemPrompt string, messages []anthropic.MessageParam) string {
+	subMessages := make([]anthropic.MessageParam, len(messages))
+	copy(subMessages, messages)
+
 	childTools := tools.ToolsExcept("task")
-	subSystem := a.cfg.SystemMsg +
-		"\nYou are a subagent. Complete the given task using the available tools, then summarize your findings concisely."
+	subSystem := a.cfg.SystemMsg + "\n" + systemPrompt
 
 	var lastText string
 

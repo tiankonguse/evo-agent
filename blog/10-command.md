@@ -7,7 +7,11 @@ tags: [agent, command, skill, golang]
 categories: [程序人生]
 updateDate: 2026-05-24 12:00:00
 published: true
+source: "https://mp.weixin.qq.com/s/M1jxdA4BysQkaN7p4hwneQ"
 ---
+
+
+
 
 
 前九篇文章分别讲了 Agent 的 [Loop](https://mp.weixin.qq.com/s/dkdrwVlwe3IkH2hzSzy53A)、[Tools](https://mp.weixin.qq.com/s/xyX4_CF5cveezEDuzFT13g)、[记忆](https://mp.weixin.qq.com/s/lguRAdxFoN22rqPyx3BIzw)、[Context Compact](https://mp.weixin.qq.com/s/YRS29wRckEmFgNb0eJrxrQ)、[MCP](https://mp.weixin.qq.com/s/rCnGif8Ee7JhRI86-RoNWA)、[Skill](https://mp.weixin.qq.com/s/X2ie0aQ2vMtddAQrkbOG5g)、[TUI](https://mp.weixin.qq.com/s/fBNFZvOOpwCPT7yysh5YkQ)、[TODO](https://mp.weixin.qq.com/s/UIlEXIuQdacowdrIg1nrDQ) 和 [Subagent](https://mp.weixin.qq.com/s/LfgDcv27vjlmLZ9NfvQ9LA)。  

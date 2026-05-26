@@ -8,11 +8,11 @@ import (
 
 // subagentRunner is the registered callback for spawning subagents.
 // Set via RegisterSubagentRunner to avoid an import cycle (agent → tools).
-var subagentRunner func(prompt string) string
+var subagentRunner func(systemPrompt string, messages []anthropic.MessageParam) string
 
 // RegisterSubagentRunner registers the function used to spawn subagents.
 // Called once by agent.New() at startup.
-func RegisterSubagentRunner(fn func(prompt string) string) {
+func RegisterSubagentRunner(fn func(systemPrompt string, messages []anthropic.MessageParam) string) {
 	subagentRunner = fn
 }
 
@@ -40,7 +40,13 @@ func init() {
 			if subagentRunner == nil {
 				return "Error: subagent runner not initialized", nil
 			}
-			return subagentRunner(in.Prompt), nil
+			// Task tool: system prompt is default subagent instruction,
+			// messages are just the user's task prompt.
+			sysPrompt := "You are a subagent. Complete the given task using the available tools, then summarize your findings concisely."
+			messages := []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock(in.Prompt)),
+			}
+			return subagentRunner(sysPrompt, messages), nil
 		},
 	})
 }

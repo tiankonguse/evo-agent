@@ -26,8 +26,8 @@ type Agent struct {
 // It also wires up tools.SubagentRunner so the task tool can spawn child agents.
 func New(client *anthropic.Client, cfg *config.Config) *Agent {
 	a := &Agent{client: client, cfg: cfg}
-	tools.RegisterSubagentRunner(func(prompt string) string {
-		return a.RunSubagent(prompt)
+	tools.RegisterSubagentRunner(func(systemPrompt string, messages []anthropic.MessageParam) string {
+		return a.RunSubagent(systemPrompt, messages)
 	})
 	return a
 }
@@ -130,6 +130,9 @@ func (a *Agent) Loop(state *LoopState) bool {
 				}
 			}
 		}
+
+		// Pass current conversation to tools so the remember tool can serialize it
+		tools.SetConversationMessages(state.Messages)
 
 		toolResults := tools.Execute(resp.Content, state.CompactState)
 		if len(toolResults) == 0 {

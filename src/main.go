@@ -55,6 +55,13 @@ func main() {
 	tools.InitMCP()
 	defer tools.ShutdownMCP()
 
+	// Load persistent memories and inject into system prompt
+	tools.GlobalMemory.Init(cfg.ProjectDir)
+	if memPrompt := tools.GlobalMemory.LoadPrompt(); memPrompt != "" {
+		cfg.SystemMsg += "\n\n" + memPrompt
+	}
+	cfg.SystemMsg += tools.MemoryGuidance
+
 	// Load skills and inject catalog into system prompt
 	skills.Init()
 	if catalog := skills.Catalog(); catalog != "" {
