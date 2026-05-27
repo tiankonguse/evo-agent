@@ -8,8 +8,6 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 
 - **Bubble Tea TUI**: Inline (non-fullscreen) terminal UI — thinking blocks, tool call results, and text responses rendered as uniform blocks with a live status bar at the bottom
 - **Slash Commands**: User-driven `/command` dispatch — type `/review`, `/deploy staging`, etc. for deterministic workflow triggers; supports shell-style arguments and template substitution (`$name`, `$0`, `$ARGUMENTS`)
-- **Built-in Commands**: System commands (like `/init`) are embedded in the binary via `//go:embed` so they persist across clones; user commands in `.evo-agent/command/` override built-in commands with the same name
-- **Agent.md Project Guidance**: At startup, reads `Agent.md` from the project root and injects it into the system prompt; generated via `/init` command which analyzes the codebase structure
 - **Multi-tool Support**: bash, read_file, write_file, edit_file, compact, load_skill — all self-registering via `init()`
 - **Self-registering Tool Pattern**: Adding a new tool only requires a single new file; no central registration needed
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
@@ -37,8 +35,6 @@ src/
     │   └── config.go          # Config struct, LoadEnv, Load
     ├── skills/
     │   ├── registry.go        # SkillManifest, Init, InitCommands, Catalog, Load, LookupForSlash
-    │   ├── builtin.go         # Built-in commands via go:embed, LoadBuiltinCommands()
-    │   ├── builtin_commands/  # Embedded command .md files (init, remember, consolidate)
     │   ├── dispatch.go        # Dispatch, SlashResult, SlashNames — slash command entry point
     │   ├── args.go            # ParseArgs — shell-style argument splitting with quoting
     │   └── render.go          # RenderBody — template substitution ($name, $N, $ARGUMENTS)
@@ -287,16 +283,6 @@ If no placeholder is present in the body, `ARGUMENTS: <raw>` is automatically ap
 
 **Dispatch priority**: commands take priority over skills when the same name exists in both.
 
-**Built-in commands** are embedded in the binary (via `//go:embed`) and always available even without `.evo-agent/command/` directory. Current built-in commands:
-
-| Command | Description |
-|---------|-------------|
-| `/init` | Analyze codebase structure and generate Agent.md project guidance file |
-| `/remember` | Persist important information from conversation to memory |
-| `/consolidate` | Consolidate and deduplicate stored memories |
-
-User commands in `.evo-agent/command/` override built-in commands with the same name.
-
 **Key differences from skills:**
 
 | | Skill | Command |
@@ -340,8 +326,6 @@ That's it — the tool is automatically available to the agent on next run.
 
 | Version | Description |
 |---------|-------------|
-| **v0.12.0** | Add `/init` built-in command: analyzes codebase structure and generates `Agent.md` project guidance file; `Agent.md` is read at startup and injected into system prompt; built-in commands embedded via `//go:embed` survive across clones; user commands in `.evo-agent/command/` override built-ins with the same name |
-| **v0.11.0** | Add auto memory: persistent memory system (`MemoryManager`, `.evo-agent/memory/`); `remember` tool spawns extraction subagent to analyze conversation and persist user preferences, feedback, project facts, and references; `consolidate_memory` tool merges duplicates and prunes stale entries; memory guidance injected into system prompt; memories auto-loaded at startup and formatted into context; built-in commands (`/remember`, `/consolidate`, `/init`) embedded via `//go:embed`; `Agent.md` loaded at startup into system prompt |
 | **v0.10.0** | Add slash command system: `Dispatch()` intercepts `/name` input; `InitCommands()` loads `.evo-agent/command/*.md`; shell-style `ParseArgs` with quoting; `RenderBody` template substitution (`$name`, `$0`, `$ARGUMENTS[N]`, `$ARGUMENTS`); commands take priority over skills; `RunQueryDirect` bypasses normal input processing |
 | **v0.9.0** | Add subagent: `task` tool (`task.go`, `RegisterSubagentRunner`), `RunSubagent()` in `subagent.go` (30-turn isolated child agent), `ToolsExcept()` helper, `PersistLargeOutput` exported; `agent.New()` injects subagent runner |
 | **v0.8.0** | Add session planning: `todo` tool (`todoManager`, max 12 items, single `in_progress` constraint, 3-round reminder injection); `EvTodo` event; live TUI plan panel (`renderTodoPanel`) |
