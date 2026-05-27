@@ -128,9 +128,9 @@ func TestDispatchCommand(t *testing.T) {
 	commandDocuments = map[string]skillDocument{}
 	InitCommands()
 
-	// Verify command was loaded
-	if len(commandDocuments) != 1 {
-		t.Fatalf("expected 1 command loaded, got %d", len(commandDocuments))
+	// Verify command was loaded (includes built-in commands)
+	if _, ok := commandDocuments["deploy"]; !ok {
+		t.Fatal("expected 'deploy' command to be loaded")
 	}
 
 	// Test dispatch

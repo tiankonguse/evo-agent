@@ -311,6 +311,9 @@ func InitCommands() {
 	if count > 0 {
 		fmt.Printf("[Commands] Loaded %d command(s)\n", count)
 	}
+
+	// Load built-in commands (embedded in binary); user commands take priority.
+	LoadBuiltinCommands()
 }
 
 // CommandNames returns the names of all user-invocable commands

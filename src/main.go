@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -19,7 +20,7 @@ import (
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.9.0"
+	agentVersion = "0.11.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
 
@@ -43,6 +44,11 @@ func main() {
 
 	config.LoadEnv()
 	cfg := config.Load()
+
+	// Load Agent.md into system prompt (if present in project root)
+	if agentMd, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "Agent.md")); err == nil {
+		cfg.SystemMsg += "\n\n# Project Guidance (Agent.md)\n\n" + string(agentMd)
+	}
 
 	if cfg.ModelID == "" {
 		fmt.Fprintln(os.Stderr, "Error: MODEL_ID not set in environment")

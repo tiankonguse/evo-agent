@@ -326,6 +326,8 @@ That's it — the tool is automatically available to the agent on next run.
 
 | Version | Description |
 |---------|-------------|
+| **v0.12.0** | Add `/init` built-in command and Agent.md loading: `/init` analyzes codebase structure and generates `Agent.md` project guidance file; `Agent.md` is read at startup and injected into system prompt; built-in commands embedded via `//go:embed` survive across clones; user commands in `.evo-agent/command/` override built-ins with the same name |
+| **v0.11.0** | Add auto memory: persistent memory system (`MemoryManager`, `.evo-agent/memory/`); `remember` tool spawns extraction subagent to analyze conversation and persist user preferences, feedback, project facts, and references; `consolidate_memory` tool merges duplicates and prunes stale entries; memory guidance injected into system prompt; memories auto-loaded at startup and formatted into context; built-in commands (`/remember`, `/consolidate`) embedded via `//go:embed` |
 | **v0.10.0** | Add slash command system: `Dispatch()` intercepts `/name` input; `InitCommands()` loads `.evo-agent/command/*.md`; shell-style `ParseArgs` with quoting; `RenderBody` template substitution (`$name`, `$0`, `$ARGUMENTS[N]`, `$ARGUMENTS`); commands take priority over skills; `RunQueryDirect` bypasses normal input processing |
 | **v0.9.0** | Add subagent: `task` tool (`task.go`, `RegisterSubagentRunner`), `RunSubagent()` in `subagent.go` (30-turn isolated child agent), `ToolsExcept()` helper, `PersistLargeOutput` exported; `agent.New()` injects subagent runner |
 | **v0.8.0** | Add session planning: `todo` tool (`todoManager`, max 12 items, single `in_progress` constraint, 3-round reminder injection); `EvTodo` event; live TUI plan panel (`renderTodoPanel`) |

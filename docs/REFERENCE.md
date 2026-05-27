@@ -47,7 +47,8 @@ See `CLAUDE.md` for the high-level architecture overview.
 | `src/internal/tools/compact.go` | 10 | compact tool registration |
 | `src/internal/tools/persist.go` | 45 | Large output persistence |
 | `src/internal/config/config.go` | 50 | Env-var config, `.env` loading |
-| `src/internal/skills/registry.go` | 85 | Skill manifest loading, catalog |
+| `src/internal/skills/registry.go` | 85 | Skill manifest loading, catalog, InitCommands |
+| `src/internal/skills/builtin.go` | 60 | Built-in commands via go:embed, LoadBuiltinCommands() |
 | `src/internal/ui/terminal.go` | 65 | `Print*` helpers, ANSI constants, `EmitTodo` |
 | `src/internal/ui/sink.go` | ~50 | `EventSink` interface, `TerminalSink`, `globalSink` |
 | `src/internal/ui/events.go` | ~50 | `Event`, `EventKind`, `TodoItem` types |
@@ -139,8 +140,10 @@ main()
   ├─ flag.Parse()                 // --plain flag
   ├─ config.LoadEnv()             // loads .env (binary dir first, then cwd)
   ├─ cfg := config.Load()         // MODEL_ID required, API_KEY optional
+  ├─ os.ReadFile("Agent.md")      // injects project guidance into system prompt (if exists)
   ├─ tools.InitMCP()              // reads .evo-agent/mcp.json, connects servers
-  ├─ skills.Init()                // walks .evo-agent/skill/**/SKILL.md
+  ├─ memory.Init() + LoadPrompt() // loads persistent memories into system prompt
+  ├─ skills.Init()                // walks .evo-agent/skill/**/SKILL.md + command/*.md + builtin embed
   ├─ cfg.SystemMsg += Catalog()   // injects skill list into system prompt
   ├─ client := anthropic.NewClient(opts...)
   ├─ ag := agent.New(client, cfg) // also calls tools.RegisterSubagentRunner(ag.RunSubagent)
@@ -223,6 +226,60 @@ using relative paths and include example prompts.
 ```
 
 3. Restart the agent. The skill appears in `skills.Catalog()` which is injected into the system prompt. The model calls `load_skill my-skill` when it needs the full body.
+
+---
+
+## Built-in Commands
+
+Built-in commands are embedded in the binary via `//go:embed` so they survive across clones (`.evo-agent/` is gitignored).
+
+### How it works
+
+Source files live in `src/internal/skills/builtin_commands/*.md`. At compile time, Go embeds them into the binary. At runtime, `LoadBuiltinCommands()` (called at the end of `InitCommands()`) registers them into `commandDocuments`.
+
+**Priority rule**: User commands from `.evo-agent/command/` override built-in commands with the same name.
+
+### How to add a new built-in command
+
+1. Create `src/internal/skills/builtin_commands/my-command.md` with frontmatter:
+
+```markdown
+---
+name: my-command
+description: What this command does
+user-invocable: true
+---
+
+Instructions for the agent when /my-command is invoked.
+```
+
+2. Rebuild: `make build`
+3. Done — the command is now available as `/my-command` in every project.
+
+### Current built-in commands
+
+| Command | Description |
+|---------|-------------|
+| `/init` | Analyze codebase and generate Agent.md guidance file |
+
+---
+
+## Agent.md (Project Guidance)
+
+`Agent.md` is a project-level guidance file loaded into the system prompt at startup. It provides project-specific context (architecture, commands, conventions) so the agent doesn't make mistakes.
+
+### How it works
+
+At startup (`main.go`), if `Agent.md` exists in the project root:
+```go
+if agentMd, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "Agent.md")); err == nil {
+    cfg.SystemMsg += "\n\n# Project Guidance (Agent.md)\n\n" + string(agentMd)
+}
+```
+
+### Generating Agent.md
+
+Run `/init` to auto-generate Agent.md by analyzing the codebase. The generated file follows a standardized template with: Project Overview, Architecture Map, Development Conventions, and Common Commands.
 
 ---
 
