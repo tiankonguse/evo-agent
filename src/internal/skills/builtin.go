@@ -15,57 +15,54 @@ var builtinCommandsFS embed.FS
 // same name already exists, the built-in version is skipped.
 func LoadBuiltinCommands() {
 	entries, err := builtinCommandsFS.ReadDir("builtin_commands")
-	if err != nil {
-		return
-	}
-
 	count := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		data, readErr := builtinCommandsFS.ReadFile("builtin_commands/" + entry.Name())
-		if readErr != nil {
-			fmt.Printf("[Builtin] Cannot read %s: %v\n", entry.Name(), readErr)
-			continue
-		}
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			data, readErr := builtinCommandsFS.ReadFile("builtin_commands/" + entry.Name())
+			if readErr != nil {
+				fmt.Printf("[Builtin] Cannot read %s: %v\n", entry.Name(), readErr)
+				continue
+			}
 
-		meta, body := parseFrontmatter(string(data))
-		name := meta["name"]
-		if name == "" {
-			name = strings.TrimSuffix(entry.Name(), ".md")
-		}
+			meta, body := parseFrontmatter(string(data))
+			name := meta["name"]
+			if name == "" {
+				name = strings.TrimSuffix(entry.Name(), ".md")
+			}
 
-		// User commands take priority over built-in commands
-		if _, exists := commandDocuments[name]; exists {
-			continue
-		}
+			// User commands take priority over built-in commands
+			if _, exists := commandDocuments[name]; exists {
+				continue
+			}
 
-		description := meta["description"]
-		if description == "" {
-			description = "No description"
-		}
-		argHint := meta["argument-hint"]
-		arguments := parseArguments(meta["arguments"])
-		userInvocable := meta["user-invocable"] != "false" // default true
+			description := meta["description"]
+			if description == "" {
+				description = "No description"
+			}
+			argHint := meta["argument-hint"]
+			arguments := parseArguments(meta["arguments"])
+			userInvocable := meta["user-invocable"] != "false" // default true
 
-		absPath := filepath.Join("<builtin>", entry.Name())
+			absPath := filepath.Join("<builtin>", entry.Name())
 
-		commandDocuments[name] = skillDocument{
-			Manifest: SkillManifest{
-				Name:          name,
-				Description:   description,
-				ArgumentHint:  argHint,
-				Arguments:     arguments,
-				IsCommand:     true,
-				UserInvocable: userInvocable,
-			},
-			Body: strings.TrimSpace(body),
-			Path: absPath,
+			commandDocuments[name] = skillDocument{
+				Manifest: SkillManifest{
+					Name:          name,
+					Description:   description,
+					ArgumentHint:  argHint,
+					Arguments:     arguments,
+					IsCommand:     true,
+					UserInvocable: userInvocable,
+				},
+				Body: strings.TrimSpace(body),
+				Path: absPath,
+			}
+			count++
 		}
-		count++
 	}
-	if count > 0 {
-		fmt.Printf("[Builtin] Loaded %d built-in command(s)\n", count)
-	}
+
+	fmt.Printf("[Builtin] Loaded %d built-in command(s)\n", count)
 }

@@ -7,6 +7,7 @@ tags: [agent, Agent.md, project, golang]
 categories: [程序人生]  
 updateDate: 2026-05-26 12:00:00  
 published: true  
+source: "https://mp.weixin.qq.com/s/82KmXRTsiDrhB-RZFg5sXw"
 ---
 
 

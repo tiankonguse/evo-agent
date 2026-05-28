@@ -11,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"evo-agent/internal/config"
+	"evo-agent/internal/prompt"
 	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 	"evo-agent/internal/ui"
@@ -18,14 +19,17 @@ import (
 
 // Agent orchestrates multi-turn conversations with the model.
 type Agent struct {
-	client *anthropic.Client
-	cfg    *config.Config
+	client      *anthropic.Client
+	cfg         *config.Config
+	prompt      *prompt.Builder
+	DumpPrompts bool   // toggle via /dump-prompts
+	dumpFile    string // session dump file path (set on first dump)
 }
 
-// New creates an Agent with the given LLM client and configuration.
+// New creates an Agent with the given LLM client, configuration, and prompt builder.
 // It also wires up tools.SubagentRunner so the task tool can spawn child agents.
-func New(client *anthropic.Client, cfg *config.Config) *Agent {
-	a := &Agent{client: client, cfg: cfg}
+func New(client *anthropic.Client, cfg *config.Config, pb *prompt.Builder) *Agent {
+	a := &Agent{client: client, cfg: cfg, prompt: pb}
 	tools.RegisterSubagentRunner(func(systemPrompt string, messages []anthropic.MessageParam) string {
 		return a.RunSubagent(systemPrompt, messages)
 	})
@@ -95,10 +99,17 @@ func (a *Agent) Loop(state *LoopState) bool {
 		// Apply micro-compaction + auto compact before LLM call
 		a.autoCompact(state)
 
+		systemPrompt := a.prompt.Build()
+
+		// Dump API call if enabled
+		if a.DumpPrompts {
+			a.DumpAPICall(systemPrompt, state.Messages)
+		}
+
 		resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewParams{
 			Model: anthropic.Model(a.cfg.ModelID),
 			System: []anthropic.TextBlockParam{
-				{Text: a.cfg.SystemMsg},
+				{Text: systemPrompt},
 			},
 			Messages:  state.Messages,
 			Tools:     tools.Tools(),
@@ -112,11 +123,23 @@ func (a *Agent) Loop(state *LoopState) bool {
 		// Append assistant response to history
 		state.Messages = append(state.Messages, resp.ToParam())
 
+		// Count content block types
+		blockCounts := map[string]int{}
+		for _, block := range resp.Content {
+			blockCounts[string(block.Type)]++
+		}
+		var blockParts []string
+		for t, c := range blockCounts {
+			blockParts = append(blockParts, fmt.Sprintf("%s:%d", t, c))
+		}
+		blockSummary := strings.Join(blockParts, " ")
+
 		ui.PrintTokens(
 			string(resp.Model),
 			resp.Usage.InputTokens,
 			resp.Usage.OutputTokens,
 			string(resp.StopReason),
+			blockSummary,
 		)
 
 		// Track file reads before executing tools
@@ -178,6 +201,17 @@ func (a *Agent) Run(r io.Reader) {
 		query := strings.TrimSpace(scanner.Text())
 		if query == "" || query == "q" || query == "exit" {
 			break
+		}
+
+		// ── Client-side commands (not sent to LLM) ──
+		if query == "/dump-prompts" {
+			on := a.ToggleDumpPrompts()
+			if on {
+				fmt.Println("[dump-prompts: ON]")
+			} else {
+				fmt.Println("[dump-prompts: OFF]")
+			}
+			continue
 		}
 
 		// ── Slash command interception ──

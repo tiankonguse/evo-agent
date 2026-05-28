@@ -2,7 +2,7 @@ BINARY_NAME = evo-agent
 BUILD_DIR   = build
 SRC_DIR     = src
 
-.PHONY: all build clean run
+.PHONY: all build clean run deps test vet
 
 all: build
 
@@ -18,3 +18,9 @@ clean:
 
 deps:
 	cd $(SRC_DIR) && go mod tidy
+
+test:
+	cd $(SRC_DIR) && go test ./...
+
+vet:
+	cd $(SRC_DIR) && go vet ./...

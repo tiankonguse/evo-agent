@@ -8,6 +8,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 
 - **Bubble Tea TUI**: Inline (non-fullscreen) terminal UI — thinking blocks, tool call results, and text responses rendered as uniform blocks with a live status bar at the bottom
 - **Slash Commands**: User-driven `/command` dispatch — type `/review`, `/deploy staging`, etc. for deterministic workflow triggers; supports shell-style arguments and template substitution (`$name`, `$0`, `$ARGUMENTS`)
+- **System Prompt Builder**: Structured, section-based prompt assembly (`internal/prompt/`) with static/dynamic boundary for cache optimization; dependency-injected providers avoid import cycles; includes environment context (git, platform, shell, model, date)
 - **Multi-tool Support**: bash, read_file, write_file, edit_file, compact, load_skill — all self-registering via `init()`
 - **Self-registering Tool Pattern**: Adding a new tool only requires a single new file; no central registration needed
 - **Table-driven Dispatch**: A global registry maps tool names to schemas and handlers
@@ -17,12 +18,13 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **Skill System**: Two-layer on-demand knowledge — cheap catalog injected into system prompt; full skill body loaded only when needed via `load_skill`
 - **Session Planning (todo)**: Built-in `todo` tool lets the model maintain a live session plan (max 12 items, exactly one `in_progress` at a time); a 3-round reminder is injected when the plan goes stale; the TUI renders a real-time plan panel at the bottom
 - **Subagent (task tool)**: `task` tool spawns an isolated child agent with a fresh context to delegate complex subtasks; child shares the filesystem but not conversation history; only a text summary is returned to the parent; recursive spawning is prevented by stripping `task` from child's tool list; hard cap of 30 turns per subagent
+- **Dump Prompts Debugging**: `/dump-prompts` toggle saves every API call (system prompt + messages) to `.evo-agent/dump-prompts/` as JSONL for prompt inspection and debugging
 
 ## Project Structure
 
 ```
 src/
-├── main.go                    # Entry point: TUI/plain mode, MCP init/shutdown, skill catalog, slash dispatch
+├── main.go                    # Entry point: TUI/plain mode, MCP init/shutdown, prompt builder, skill catalog, slash dispatch
 ├── go.mod
 └── internal/
     ├── agent/
@@ -30,12 +32,17 @@ src/
     │   ├── state.go           # LoopState, CompactState
     │   ├── compact.go         # MicroCompact, CompactHistory, SummarizeHistory, TrackRecentFile
     │   ├── subagent.go        # RunSubagent: isolated child agent, 30-turn cap, summary return
+    │   ├── dump.go            # DumpAPICall, ToggleDumpPrompts: save API calls to JSONL for debugging
     │   └── transcripts.go     # WriteTranscript: save full history to .evo-agent/transcripts/
     ├── config/
     │   └── config.go          # Config struct, LoadEnv, Load
+    ├── prompt/
+    │   ├── builder.go         # Builder: section-based system prompt assembly with static/dynamic boundary
+    │   └── builder_test.go    # Unit tests for prompt builder sections and ordering
     ├── skills/
     │   ├── registry.go        # SkillManifest, Init, InitCommands, Catalog, Load, LookupForSlash
     │   ├── dispatch.go        # Dispatch, SlashResult, SlashNames — slash command entry point
+    │   ├── provider.go        # Provider struct: satisfies prompt.SkillsProvider interface
     │   ├── args.go            # ParseArgs — shell-style argument splitting with quoting
     │   └── render.go          # RenderBody — template substitution ($name, $N, $ARGUMENTS)
     ├── tools/
@@ -321,11 +328,15 @@ That's it — the tool is automatically available to the agent on next run.
 | [08-todo](blog/08-todo.md) | Session Planning — todo tool, state constraints, reminder injection, TUI panel |
 | [09-subagent](blog/09-subagent.md) | Subagent — task tool, isolated child agent, import-cycle avoidance, no recursive spawning |
 | [10-command](blog/10-command.md) | Slash Commands — user-driven deterministic dispatch, command vs skill design, argument substitution |
+| [11-auto-memory](blog/11-auto-memory.md) | Auto Memory — persistent memory system, remember tool, consolidation, memory guidance injection |
+| [12-agent-markdown](blog/12-agent-markdown.md) | Agent.md — project guidance file, /init built-in command, go:embed built-in commands |
+| [13-system-prompt](blog/13-systerm-prompt.md) | System Prompt — structured builder pattern, static/dynamic boundary, environment injection, dump-prompts debugging |
 
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.13.0** | Add system prompt builder: `internal/prompt` package with `Builder` struct assembles prompt from independent sections; static/dynamic boundary (`DynamicBoundary`) separates cacheable content from per-session context; `MemoryProvider` and `SkillsProvider` interfaces for dependency injection; environment section injects runtime context (git, platform, shell, model, date); `/dump-prompts` toggle saves API calls to `.evo-agent/dump-prompts/*.jsonl` for debugging; `skills.Provider` adapter satisfies prompt interfaces |
 | **v0.12.0** | Add `/init` built-in command and Agent.md loading: `/init` analyzes codebase structure and generates `Agent.md` project guidance file; `Agent.md` is read at startup and injected into system prompt; built-in commands embedded via `//go:embed` survive across clones; user commands in `.evo-agent/command/` override built-ins with the same name |
 | **v0.11.0** | Add auto memory: persistent memory system (`MemoryManager`, `.evo-agent/memory/`); `remember` tool spawns extraction subagent to analyze conversation and persist user preferences, feedback, project facts, and references; `consolidate_memory` tool merges duplicates and prunes stale entries; memory guidance injected into system prompt; memories auto-loaded at startup and formatted into context; built-in commands (`/remember`, `/consolidate`) embedded via `//go:embed` |
 | **v0.10.0** | Add slash command system: `Dispatch()` intercepts `/name` input; `InitCommands()` loads `.evo-agent/command/*.md`; shell-style `ParseArgs` with quoting; `RenderBody` template substitution (`$name`, `$0`, `$ARGUMENTS[N]`, `$ARGUMENTS`); commands take priority over skills; `RunQueryDirect` bypasses normal input processing |

@@ -289,6 +289,8 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		m.busy = false
 		elapsed := time.Since(m.queryStartTime)
 		cmds = append(cmds, tea.Println(elapsedStyle.Render("🕐 "+formatDuration(elapsed))+"\n"))
+		// Re-focus textarea so completion and input work after agent finishes
+		cmds = append(cmds, m.textarea.Focus())
 
 	case ui.EvSystem:
 		if e.Text != "" {
@@ -300,6 +302,11 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		m.info.OutputTokens = e.OutputTokens
 		if e.Model != "" {
 			m.info.Model = e.Model
+		}
+		if e.BlockSummary != "" {
+			tokenInfo := fmt.Sprintf("model=%s in=%d out=%d stop=%s blocks=[%s]",
+				e.Model, e.InputTokens, e.OutputTokens, e.StopReason, e.BlockSummary)
+			cmds = append(cmds, tea.Println(systemStyle.Render(tokenInfo)))
 		}
 
 	case ui.EvTodo:

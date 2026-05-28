@@ -19,27 +19,126 @@ const (
 	maxIndexLines   = 200
 )
 
+// ── Shared memory prompt sections ────────────────────────────────────────────
+// These constants are used by both MemoryGuidance (system prompt) and
+// buildExtractionPrompt (subagent), avoiding duplication.
+
+const memoryTypesText = `## Types of memory
+
+There are four discrete types of memory you can store:
+
+<types>
+<type>
+    <name>user</name>
+    <description>Information about the user's role, goals, responsibilities, and knowledge. Great user memories help tailor future behavior to the user's preferences and perspective.</description>
+    <when_to_save>When you learn details about the user's role, preferences, responsibilities, or knowledge.</when_to_save>
+    <examples>
+    - user is a data scientist, currently focused on observability/logging
+    - deep Go expertise, new to React — frame frontend explanations in terms of backend analogues
+    </examples>
+</type>
+<type>
+    <name>feedback</name>
+    <description>Guidance the user has given about how to approach work — both what to avoid and what to keep doing. Record from failure AND success: if you only save corrections, you will avoid past mistakes but drift away from validated approaches.</description>
+    <when_to_save>Any time the user corrects your approach OR confirms a non-obvious approach worked. Include *why* so you can judge edge cases later.</when_to_save>
+    <body_structure>Lead with the rule itself, then a **Why:** line and a **How to apply:** line.</body_structure>
+    <examples>
+    - integration tests must hit a real database, not mocks. Why: prior incident where mock/prod divergence masked a broken migration. How to apply: never mock DB in test files under integration/
+    - user wants terse responses with no trailing summaries
+    </examples>
+</type>
+<type>
+    <name>project</name>
+    <description>Information about ongoing work, goals, initiatives, bugs, or incidents within the project that is not derivable from code or git history.</description>
+    <when_to_save>When you learn who is doing what, why, or by when. Convert relative dates to absolute dates.</when_to_save>
+    <body_structure>Lead with the fact or decision, then a **Why:** line and a **How to apply:** line.</body_structure>
+    <examples>
+    - merge freeze begins 2026-03-05 for mobile release cut
+    - auth middleware rewrite is driven by legal/compliance, not tech-debt — scope decisions should favor compliance over ergonomics
+    </examples>
+</type>
+<type>
+    <name>reference</name>
+    <description>Pointers to where information can be found in external systems. Allows remembering where to look for up-to-date information outside the project directory.</description>
+    <when_to_save>When you learn about resources in external systems and their purpose.</when_to_save>
+    <examples>
+    - pipeline bugs are tracked in Linear project "INGEST"
+    - grafana.internal/d/api-latency is the oncall latency dashboard
+    </examples>
+</type>
+</types>`
+
+const memoryWhatNotToSaveText = `## What NOT to save in memory
+
+- Code patterns, conventions, architecture, file paths, or project structure — these can be derived by reading the current project state.
+- Git history, recent changes, or who-changed-what — git log / git blame are authoritative.
+- Debugging solutions or fix recipes — the fix is in the code; the commit message has the context.
+- Ephemeral task details: in-progress work, temporary state, current conversation context.
+- Secrets or credentials.
+
+These exclusions apply even when the user explicitly asks you to save. If they ask you to save a PR list or activity summary, ask what was *surprising* or *non-obvious* about it — that is the part worth keeping.`
+
+const memoryHowToSaveText = `## How to save memories
+
+Saving a memory is a two-step process:
+
+**Step 1** — write the memory to its own file (e.g., user_role.md, feedback_testing.md) using this frontmatter format:
+
+` + "```" + `markdown
+---
+name: {{memory name}}
+description: {{one-line description — used to decide relevance in future conversations, so be specific}}
+type: {{user, feedback, project, reference}}
+---
+
+{{memory content — for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}}
+` + "```" + `
+
+**Step 2** — add a pointer to that file in MEMORY.md. MEMORY.md is an index, not a memory — each entry should be one line, under ~150 characters. It has no frontmatter. Never write memory content directly into MEMORY.md.
+
+Rules:
+- MEMORY.md is always loaded into the system prompt — lines after 200 will be truncated, so keep it concise
+- Organize memory semantically by topic, not chronologically
+- Update or remove memories that turn out to be wrong or outdated
+- Do not write duplicate memories — update an existing file rather than creating a new one`
+
+const memoryBeforeRecommendingText = `## Before recommending from memory
+
+A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged. Before recommending it:
+- If the memory names a file path: check the file exists.
+- If the memory names a function or flag: grep for it.
+- If the user is about to act on your recommendation, verify first.
+
+"The memory says X exists" is not the same as "X exists now."`
+
+// ── Composed prompts ─────────────────────────────────────────────────────────
+
 // MemoryGuidance is injected into the system prompt to guide the agent on
-// when to proactively call the remember tool.
+// when and how to use the persistent memory system.
+// Structured to match Claude Code's memdir.ts buildMemoryLines() pattern.
 const MemoryGuidance = `
-## Memory guidance
+# Memory
 
-When to save memories (use the remember tool):
-- User states a preference ("I like tabs", "always use pytest") → type: user
-- User corrects your approach ("don't do X", "that was wrong because...") → type: feedback
-- You learn a project fact NOT easily inferred from current code alone
-  (e.g. a rule exists for compliance reasons, or a legacy module must stay untouched
-  for business reasons) → type: project
-- You learn where an external resource lives (ticket board, dashboard, docs URL)
-  → type: reference
+You have a persistent, file-based memory system at .evo-agent/memory/. This directory already exists — write to it directly (do not run mkdir or check for its existence).
 
-When NOT to save:
-- Anything easily derivable from code (function signatures, file structure, directory layout)
-- Temporary task state (current branch, open PR numbers, current TODOs)
-- Secrets or credentials (API keys, passwords)
-- Git history or recent changes — git log / git blame are authoritative
-- Debugging solutions — the fix is in the code; the commit message has the context
-`
+You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.
+
+If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.
+
+` + memoryTypesText + `
+
+` + memoryWhatNotToSaveText + `
+
+` + memoryHowToSaveText + `
+
+## When to access memories
+
+- When memories seem relevant, or the user references prior-conversation work.
+- You MUST access memory when the user explicitly asks you to check, recall, or remember.
+- If the user says to *ignore* or *not use* memory: proceed as if MEMORY.md were empty.
+- Memory records can become stale over time. Before answering based solely on information in memory records, verify that the memory is still correct by reading the current state of files or resources. If a recalled memory conflicts with current information, trust what you observe now — and update or remove the stale memory.
+
+` + memoryBeforeRecommendingText
 
 // memoryEntry is the internal representation of a persistent memory.
 type memoryEntry struct {
@@ -106,6 +205,13 @@ func (m *MemoryManager) Dir() string {
 	return m.dir
 }
 
+// Count returns the number of loaded memories.
+func (m *MemoryManager) Count() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.memories)
+}
+
 // LoadAll scans *.md files (except MEMORY.md) and parses their frontmatter.
 func (m *MemoryManager) LoadAll() {
 	m.mu.Lock()
@@ -150,9 +256,7 @@ func (m *MemoryManager) LoadAll() {
 		}
 	}
 
-	if len(m.memories) > 0 {
-		fmt.Printf("[Memory] Loaded %d memory(s)\n", len(m.memories))
-	}
+	fmt.Printf("[Memory] Loaded %d memory(s)\n", len(m.memories))
 }
 
 // LoadPrompt formats all memories for injection into the system prompt.
@@ -241,7 +345,7 @@ func parseMemoryFrontmatter(text string) (map[string]string, string) {
 	return meta, strings.TrimSpace(body)
 }
 
-// ── Extraction prompt (based on refs.ts) ─────────────────────────────────────
+// ── Extraction prompt ────────────────────────────────────────────────────────
 
 func buildExtractionPrompt(memoryDir string, existingMemories string) string {
 	manifest := ""
@@ -257,92 +361,17 @@ Memory directory: %s
 Available tools: read_file, write_file, edit_file, bash (read-only: ls/find/cat/stat only).
 You have a limited turn budget. The efficient strategy is: turn 1 — read all files you might update in parallel; turn 2 — write/edit all files in parallel. Do not interleave reads and writes across multiple turns.%s
 
-## Types of memory
+%s
 
-There are four discrete types of memory you can store:
+%s
 
-<types>
-<type>
-    <name>user</name>
-    <description>Information about the user's role, goals, responsibilities, and knowledge. Great user memories help tailor future behavior to the user's preferences and perspective.</description>
-    <when_to_save>When you learn details about the user's role, preferences, responsibilities, or knowledge.</when_to_save>
-    <examples>
-    - user is a data scientist, currently focused on observability/logging
-    - deep Go expertise, new to React — frame frontend explanations in terms of backend analogues
-    </examples>
-</type>
-<type>
-    <name>feedback</name>
-    <description>Guidance the user has given about how to approach work — both what to avoid and what to keep doing. Record from failure AND success: if you only save corrections, you will avoid past mistakes but drift away from validated approaches.</description>
-    <when_to_save>Any time the user corrects your approach OR confirms a non-obvious approach worked. Include *why* so you can judge edge cases later.</when_to_save>
-    <body_structure>Lead with the rule itself, then a **Why:** line and a **How to apply:** line.</body_structure>
-    <examples>
-    - integration tests must hit a real database, not mocks. Why: prior incident where mock/prod divergence masked a broken migration. How to apply: never mock DB in test files under integration/
-    - user wants terse responses with no trailing summaries
-    </examples>
-</type>
-<type>
-    <name>project</name>
-    <description>Information about ongoing work, goals, initiatives, bugs, or incidents within the project that is not derivable from code or git history. Helps understand broader context and motivation.</description>
-    <when_to_save>When you learn who is doing what, why, or by when. Convert relative dates to absolute dates.</when_to_save>
-    <body_structure>Lead with the fact or decision, then a **Why:** line and a **How to apply:** line.</body_structure>
-    <examples>
-    - merge freeze begins 2026-03-05 for mobile release cut
-    - auth middleware rewrite is driven by legal/compliance, not tech-debt — scope decisions should favor compliance over ergonomics
-    </examples>
-</type>
-<type>
-    <name>reference</name>
-    <description>Pointers to where information can be found in external systems. Allows remembering where to look for up-to-date information outside the project directory.</description>
-    <when_to_save>When you learn about resources in external systems and their purpose.</when_to_save>
-    <examples>
-    - pipeline bugs are tracked in Linear project "INGEST"
-    - grafana.internal/d/api-latency is the oncall latency dashboard
-    </examples>
-</type>
-</types>
-
-## What NOT to save in memory
-
-- Code patterns, conventions, architecture, file paths, or project structure — these can be derived by reading the current project state.
-- Git history, recent changes, or who-changed-what — git log / git blame are authoritative.
-- Debugging solutions or fix recipes — the fix is in the code; the commit message has the context.
-- Ephemeral task details: in-progress work, temporary state, current conversation context.
-- Secrets or credentials.
-
-These exclusions apply even when the user explicitly asks you to save. If they ask you to save a PR list or activity summary, save only what was *surprising* or *non-obvious* about it.
-
-## How to save memories
-
-Saving a memory is a two-step process:
-
-**Step 1** — Write the memory to its own file (e.g., user_role.md, feedback_testing.md) using this frontmatter format:
-
-`+"```"+`markdown
----
-name: {{memory name}}
-description: {{one-line description — used to decide relevance in future conversations, so be specific}}
-type: {{user, feedback, project, reference}}
----
-
-{{memory content — for feedback/project types, structure as: rule/fact, then **Why:** and **How to apply:** lines}}
-`+"```"+`
-
-**Step 2** — Update MEMORY.md index. MEMORY.md is an index, not a memory — each entry should be one line, under ~150 characters: `+"`- [Title](file.md) — one-line hook`"+`. It has no frontmatter. Never write memory content directly into MEMORY.md.
-
-Rules:
-- MEMORY.md is always loaded into the system prompt — lines after 200 will be truncated, so keep it concise
-- Organize memory semantically by topic, not chronologically
-- Update or remove memories that turn out to be wrong or outdated
-- Do not write duplicate memories — update an existing file rather than creating a new one
+%s
 - Use read_file to check existing files before deciding to create vs update
 
-## Before recommending from memory
-
-A memory that names a specific function, file, or flag is a claim that it existed *when the memory was written*. It may have been renamed, removed, or never merged. Before recommending it: verify it still exists.
+%s
 
 Now analyze the conversation and extract any memories worth persisting. If nothing warrants saving, respond with "No new memories to save."
-`, memoryDir, manifest)
+`, memoryDir, manifest, memoryTypesText, memoryWhatNotToSaveText, memoryHowToSaveText, memoryBeforeRecommendingText)
 }
 
 // ── Consolidation prompt ─────────────────────────────────────────────────────

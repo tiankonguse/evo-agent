@@ -12,6 +12,7 @@ import (
 
 	"evo-agent/internal/agent"
 	"evo-agent/internal/config"
+	"evo-agent/internal/prompt"
 	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 	"evo-agent/internal/tui"
@@ -20,7 +21,7 @@ import (
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.11.0"
+	agentVersion = "0.13.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
 
@@ -45,11 +46,6 @@ func main() {
 	config.LoadEnv()
 	cfg := config.Load()
 
-	// Load Agent.md into system prompt (if present in project root)
-	if agentMd, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "Agent.md")); err == nil {
-		cfg.SystemMsg += "\n\n# Project Guidance (Agent.md)\n\n" + string(agentMd)
-	}
-
 	if cfg.ModelID == "" {
 		fmt.Fprintln(os.Stderr, "Error: MODEL_ID not set in environment")
 		os.Exit(1)
@@ -58,37 +54,33 @@ func main() {
 	opts := BuildOptions(cfg)
 	client := anthropic.NewClient(opts...)
 
+	fmt.Printf("[%s] v%s | model=%s\n", agentName, agentVersion, cfg.ModelID)
+
 	tools.InitMCP()
 	defer tools.ShutdownMCP()
 
-	// Load persistent memories and inject into system prompt
+	// Load persistent memories
 	tools.GlobalMemory.Init(cfg.ProjectDir)
-	if memPrompt := tools.GlobalMemory.LoadPrompt(); memPrompt != "" {
-		cfg.SystemMsg += "\n\n" + memPrompt
-	}
-	cfg.SystemMsg += tools.MemoryGuidance
 
-	// Load skills and inject catalog into system prompt
+	// Load skills and commands
 	skills.Init()
-	if catalog := skills.Catalog(); catalog != "" {
-		cfg.SystemMsg += "\nSkills available:\n" + catalog +
-			"\nUse load_skill when a task needs specialized instructions before you act."
+
+	// Build system prompt via the prompt builder
+	builder := prompt.NewBuilder(cfg, tools.GlobalMemory, skills.Provider{})
+
+	// Load Agent.md into builder (if present in project root)
+	if agentMd, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "Agent.md")); err == nil {
+		builder.SetAgentMd(string(agentMd))
 	}
 
-	// Slash command introduction
-	slashNames := skills.SlashNames()
-	if len(slashNames) > 0 {
-		cfg.SystemMsg += "\n\nSlash commands: /<skill-name> (e.g., /git-commit) is shorthand for users " +
-			"to invoke a skill. When executed, the skill content is expanded into a full prompt. " +
-			"Use the load_skill tool to load skills programmatically. " +
-			"IMPORTANT: Only use load_skill for skills listed above - do not guess or invent skill names."
-	}
+	// Set memory guidance
+	builder.SetMemoryGuidance(tools.MemoryGuidance)
 
-	a := agent.New(&client, cfg)
+	a := agent.New(&client, cfg, builder)
 
+	tools.PrintToolList()
 	if *plain {
 		// Plain-text REPL (original behaviour) — TerminalSink is the default.
-		tools.PrintToolList()
 		a.Run(os.Stdin)
 		return
 	}
@@ -129,6 +121,18 @@ func main() {
 		var history []anthropic.MessageParam
 		compactState := &agent.CompactState{}
 		for query := range queryCh {
+			// ── Client-side commands (not sent to LLM) ──
+			if query == "/dump-prompts" {
+				on := a.ToggleDumpPrompts()
+				if on {
+					ui.PrintSystem("[dump-prompts: ON]")
+				} else {
+					ui.PrintSystem("[dump-prompts: OFF]")
+				}
+				ui.PrintDone()
+				continue
+			}
+
 			// ── Slash command interception ──
 			if result := skills.Dispatch(query); result.Found {
 				if result.Content != "" {
@@ -155,6 +159,9 @@ func main() {
 			ui.PrintDone()
 		}
 	}()
+
+	// Print padding lines so TUI View doesn't overwrite startup info above
+	fmt.Print("\n\n\n\n\n")
 
 	if err := tui.Run(info, queryCh); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)

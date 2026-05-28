@@ -47,8 +47,8 @@ func (TerminalSink) Emit(e Event) {
 	case EvSystem:
 		fmt.Printf("%s%s%s\n", ColorMagenta, e.Text, ColorReset)
 	case EvTokens:
-		fmt.Printf("%sDEBUG: model=%s in=%d out=%d stop=%s%s\n",
-			ColorMagenta, e.Model, e.InputTokens, e.OutputTokens, e.StopReason, ColorReset)
+		fmt.Printf("%sDEBUG: model=%s in=%d out=%d stop=%s blocks=[%s]%s\n",
+			ColorMagenta, e.Model, e.InputTokens, e.OutputTokens, e.StopReason, e.BlockSummary, ColorReset)
 	case EvDone:
 		// nothing to print in plain mode
 	case EvTodo:

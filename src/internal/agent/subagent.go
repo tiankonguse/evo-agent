@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
@@ -21,7 +22,7 @@ func (a *Agent) RunSubagent(systemPrompt string, messages []anthropic.MessagePar
 	copy(subMessages, messages)
 
 	childTools := tools.ToolsExcept("task")
-	subSystem := a.cfg.SystemMsg + "\n" + systemPrompt
+	subSystem := a.prompt.Build() + "\n" + systemPrompt
 
 	var lastText string
 
@@ -39,7 +40,17 @@ func (a *Agent) RunSubagent(systemPrompt string, messages []anthropic.MessagePar
 		subMessages = append(subMessages, resp.ToParam())
 
 		ui.PrintSystem(fmt.Sprintf("[subagent turn %d | %s]", turn+1, resp.StopReason))
-		ui.PrintTokens(string(resp.Model), resp.Usage.InputTokens, resp.Usage.OutputTokens, string(resp.StopReason))
+
+		// Count content block types for subagent
+		blockCounts := map[string]int{}
+		for _, block := range resp.Content {
+			blockCounts[string(block.Type)]++
+		}
+		var blockParts []string
+		for t, c := range blockCounts {
+			blockParts = append(blockParts, fmt.Sprintf("%s:%d", t, c))
+		}
+		ui.PrintTokens(string(resp.Model), resp.Usage.InputTokens, resp.Usage.OutputTokens, string(resp.StopReason), strings.Join(blockParts, " "))
 
 		var toolResults []anthropic.ContentBlockParamUnion
 		lastText = ""

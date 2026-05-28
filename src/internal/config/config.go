@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -13,7 +12,6 @@ type Config struct {
 	ModelID    string
 	APIKey     string
 	BaseURL    string
-	SystemMsg  string
 	ProjectDir string
 }
 
@@ -38,6 +36,5 @@ func Load() *Config {
 		APIKey:     os.Getenv("ANTHROPIC_API_KEY"),
 		BaseURL:    os.Getenv("ANTHROPIC_BASE_URL"),
 		ProjectDir: cwd,
-		SystemMsg:  fmt.Sprintf("You are a coding agent at %s.", cwd),
 	}
 }

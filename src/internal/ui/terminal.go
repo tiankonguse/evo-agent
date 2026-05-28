@@ -42,13 +42,14 @@ func PrintSystem(msg string) {
 	globalSink.Emit(Event{Kind: EvSystem, Text: msg})
 }
 
-func PrintTokens(model string, inputTok, outputTok int64, stopReason string) {
+func PrintTokens(model string, inputTok, outputTok int64, stopReason string, blockSummary string) {
 	globalSink.Emit(Event{
 		Kind:         EvTokens,
 		Model:        model,
 		InputTokens:  inputTok,
 		OutputTokens: outputTok,
 		StopReason:   stopReason,
+		BlockSummary: blockSummary,
 	})
 }
 

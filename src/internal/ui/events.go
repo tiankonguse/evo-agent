@@ -43,6 +43,7 @@ type Event struct {
 	OutputTokens int64
 	Model        string
 	StopReason   string
+	BlockSummary string // e.g. "tool_use:2 text:1 thinking:1"
 
 	// EvTodo
 	TodoItems []TodoItem

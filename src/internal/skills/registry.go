@@ -40,59 +40,55 @@ var (
 // Missing directory is silently ignored (consistent with MCP config behaviour).
 func Init() {
 	skillsDir := filepath.Join(".evo-agent", "skill")
-	if _, err := os.Stat(skillsDir); os.IsNotExist(err) {
-		return
-	}
+	if _, err := os.Stat(skillsDir); err == nil {
+		err := filepath.WalkDir(skillsDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+				return nil
+			}
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				fmt.Fprintf(os.Stderr, "[Skills] Cannot read %s: %v\n", path, readErr)
+				return nil
+			}
+			meta, body := parseFrontmatter(string(data))
+			name := meta["name"]
+			if name == "" {
+				// Fall back to the parent directory name
+				name = filepath.Base(filepath.Dir(path))
+			}
+			description := meta["description"]
+			if description == "" {
+				description = "No description"
+			}
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				absPath = path
+			}
+			argHint := meta["argument-hint"]
+			arguments := parseArguments(meta["arguments"])
+			disableModel := meta["disable-model-invocation"] == "true" // default false
+			userInvocable := meta["user-invocable"] != "false"         // default true
 
-	err := filepath.WalkDir(skillsDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			skillDocuments[name] = skillDocument{
+				Manifest: SkillManifest{
+					Name:                   name,
+					Description:            description,
+					ArgumentHint:           argHint,
+					Arguments:              arguments,
+					IsCommand:              false,
+					DisableModelInvocation: disableModel,
+					UserInvocable:          userInvocable,
+				},
+				Body: strings.TrimSpace(body),
+				Path: absPath,
+			}
 			return nil
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "[Skills] Cannot read %s: %v\n", path, readErr)
-			return nil
-		}
-		meta, body := parseFrontmatter(string(data))
-		name := meta["name"]
-		if name == "" {
-			// Fall back to the parent directory name
-			name = filepath.Base(filepath.Dir(path))
-		}
-		description := meta["description"]
-		if description == "" {
-			description = "No description"
-		}
-		absPath, err := filepath.Abs(path)
+		})
 		if err != nil {
-			absPath = path
+			fmt.Fprintf(os.Stderr, "[Skills] Walk error: %v\n", err)
 		}
-		argHint := meta["argument-hint"]
-		arguments := parseArguments(meta["arguments"])
-		disableModel := meta["disable-model-invocation"] == "true" // default false
-		userInvocable := meta["user-invocable"] != "false"         // default true
-
-		skillDocuments[name] = skillDocument{
-			Manifest: SkillManifest{
-				Name:                   name,
-				Description:            description,
-				ArgumentHint:           argHint,
-				Arguments:              arguments,
-				IsCommand:              false,
-				DisableModelInvocation: disableModel,
-				UserInvocable:          userInvocable,
-			},
-			Body: strings.TrimSpace(body),
-			Path: absPath,
-		}
-		return nil
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Skills] Walk error: %v\n", err)
 	}
-	if len(skillDocuments) > 0 {
-		fmt.Printf("[Skills] Loaded %d skill(s)\n", len(skillDocuments))
-	}
+	fmt.Printf("[Skills] Loaded %d skill(s)\n", len(skillDocuments))
 
 	// Also load commands from .evo-agent/command/
 	InitCommands()
@@ -255,62 +251,57 @@ func knownSkillNames() string {
 // InitCommands scans .evo-agent/command/*.md and loads all commands.
 // Commands are like skills but stored as flat files and NOT included in the catalog.
 func InitCommands() {
-	cmdDir := filepath.Join(".evo-agent", "command")
-	if _, err := os.Stat(cmdDir); os.IsNotExist(err) {
-		return
-	}
-
-	entries, err := os.ReadDir(cmdDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Commands] ReadDir error: %v\n", err)
-		return
-	}
-
 	count := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		path := filepath.Join(cmdDir, entry.Name())
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			fmt.Fprintf(os.Stderr, "[Commands] Cannot read %s: %v\n", path, readErr)
-			continue
-		}
-		meta, body := parseFrontmatter(string(data))
-		name := meta["name"]
-		if name == "" {
-			name = strings.TrimSuffix(entry.Name(), ".md")
-		}
-		description := meta["description"]
-		if description == "" {
-			description = "No description"
-		}
-		argHint := meta["argument-hint"]
-		arguments := parseArguments(meta["arguments"])
-		userInvocable := meta["user-invocable"] != "false" // default true
-
-		absPath, err := filepath.Abs(path)
+	cmdDir := filepath.Join(".evo-agent", "command")
+	if _, err := os.Stat(cmdDir); err == nil {
+		entries, err := os.ReadDir(cmdDir)
 		if err != nil {
-			absPath = path
+			fmt.Fprintf(os.Stderr, "[Commands] ReadDir error: %v\n", err)
+		} else {
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+					continue
+				}
+				path := filepath.Join(cmdDir, entry.Name())
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					fmt.Fprintf(os.Stderr, "[Commands] Cannot read %s: %v\n", path, readErr)
+					continue
+				}
+				meta, body := parseFrontmatter(string(data))
+				name := meta["name"]
+				if name == "" {
+					name = strings.TrimSuffix(entry.Name(), ".md")
+				}
+				description := meta["description"]
+				if description == "" {
+					description = "No description"
+				}
+				argHint := meta["argument-hint"]
+				arguments := parseArguments(meta["arguments"])
+				userInvocable := meta["user-invocable"] != "false" // default true
+
+				absPath, err := filepath.Abs(path)
+				if err != nil {
+					absPath = path
+				}
+				commandDocuments[name] = skillDocument{
+					Manifest: SkillManifest{
+						Name:          name,
+						Description:   description,
+						ArgumentHint:  argHint,
+						Arguments:     arguments,
+						IsCommand:     true,
+						UserInvocable: userInvocable,
+					},
+					Body: strings.TrimSpace(body),
+					Path: absPath,
+				}
+				count++
+			}
 		}
-		commandDocuments[name] = skillDocument{
-			Manifest: SkillManifest{
-				Name:          name,
-				Description:   description,
-				ArgumentHint:  argHint,
-				Arguments:     arguments,
-				IsCommand:     true,
-				UserInvocable: userInvocable,
-			},
-			Body: strings.TrimSpace(body),
-			Path: absPath,
-		}
-		count++
 	}
-	if count > 0 {
-		fmt.Printf("[Commands] Loaded %d command(s)\n", count)
-	}
+	fmt.Printf("[Commands] Loaded %d command(s)\n", count)
 
 	// Load built-in commands (embedded in binary); user commands take priority.
 	LoadBuiltinCommands()

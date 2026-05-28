@@ -36,11 +36,11 @@ make run            # TUI mode (default)
 make deps           # runs go mod tidy inside src/
 
 # Test
-cd src && go test ./...
-cd src && go test ./internal/skills/...   # single package
+make test                                   # all packages
+cd src && go test ./internal/skills/...     # single package
 
 # Vet
-cd src && go vet ./...
+make vet
 
 # Clean
 make clean
