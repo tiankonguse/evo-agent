@@ -102,6 +102,17 @@ var (
 	todoCompletedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
 	todoActiveFormStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681")).Italic(true)
 
+	// ── Plan panel ───────────────────────────────────────────────────────────
+	planBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#1f6feb")).
+			PaddingLeft(1).
+			PaddingRight(1)
+
+	planHeaderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#1f6feb")).
+			Bold(true)
+
 	// ── Completion dropdown ──────────────────────────────────────────────────
 	completionBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).

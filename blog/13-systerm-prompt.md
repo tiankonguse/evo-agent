@@ -1,12 +1,13 @@
 ---
 layout: post  
-title: Agent 的灵魂注入：System Prompt 架构设计  
-description: 第三篇讲过 System Prompt 是 Agent 的"底色"，但那时只有一行"You are a coding agent"。随着 Agent 能力越来越多，System Prompt 也从一句话演化成了一个多层架构。这篇深入聊聊 System Prompt 的工程设计——怎么把一大堆指令有序地"注入"到 Agent 的灵魂里。  
+title: Agent 的灵魂注入：System Prompt  
+description: 随着 Agent 能力越来越多，System Prompt 也从一句话演化成了一个多层架构。这篇深入聊聊 System Prompt 的工程设计——怎么把一大堆指令有序地"注入"到 Agent 的灵魂里。  
 keywords: agent,system prompt,prompt engineering,golang  
 tags: [agent, system prompt, prompt engineering, golang]  
 categories: [程序人生]  
 updateDate: 2026-05-28 12:00:00  
 published: true  
+source: "https://mp.weixin.qq.com/s/15mxhcDs1oWBwguF_IIZDg"
 ---
 
 
@@ -15,6 +16,8 @@ published: true
 
 这篇聊一个贯穿整个系列的核心话题——**System Prompt 的架构设计**。  
 
+
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/001.png)
 
 
 ## 一、从一行到一百行
@@ -52,10 +55,16 @@ SystemMsg: fmt.Sprintf("You are a coding agent at %s.", cwd),
 于是，System Prompt 从一行代码，逐渐演化成了一个**多段落、多来源、分层组装**的架构。  
 
 
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/002.png)
+
+
 ## 二、System Prompt 在架构中的位置
 
 
 先回顾一下 LLM 每次被调用时"看到"的完整世界。  
+
+
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/003.png)
 
 
 ```mermaid
@@ -96,7 +105,6 @@ evo-agent 用一个 `prompt.Builder` 来管理 System Prompt 的组装。
 核心思路是：**把一个大提示词拆成若干独立 Section，每个 Section 有明确的职责和来源，最后按顺序拼装。**  
 
 
-
 Builder 在启动时创建一次，持有所有依赖的引用。每次 Agent Loop 发起 LLM 调用前，调一次 `Build()` 方法，拿到当前最新的完整 System Prompt。  
 
 
@@ -106,10 +114,16 @@ Builder 在启动时创建一次，持有所有依赖的引用。每次 Agent Lo
 因为有些 Section 是**动态的**。比如 Memory 的内容可能在会话中途被更新（用户说了 `/remember`），Skills 的列表可能因为加载新 Skill 而变化。每次 Build 确保 LLM 看到的是最新状态。  
 
 
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/004.png)
+
+
 ## 四、Section 全景：Agent 的"灵魂蓝图"
 
 
 `BuildSections()` 方法返回所有 Section 的有序列表。这个顺序是精心设计的。  
+
+
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/005.png)
 
 
 ```mermaid
@@ -215,6 +229,9 @@ Claude API 提供了一个优化手段——**Prompt Caching**。如果你连续
 动态区域的每个 Section 都有独立的数据来源。  
 
 
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/006.png)
+
+
 ```mermaid
 graph LR
     A["Agent.md"] -->|"启动时读文件"| B["Project Guidance"]
@@ -241,7 +258,7 @@ graph LR
 **Environment** 是纯实时信息——工作目录、是否在 Git 仓库内、操作系统、Shell 类型、当前日期、使用的模型名称。这些信息让 Agent 对当前运行环境有基本感知，不至于在执行操作时"睁眼瞎"。比如知道工作目录在哪，构造文件路径时就不会迷失方向；知道当前日期，处理时间相关的任务就能给出准确判断。  
 
 
-## 八、从 Builder 到 API 调用
+## 七、从 Builder 到 API 调用
 
 
 最后看一下 System Prompt 是怎么被使用的。  
@@ -266,6 +283,9 @@ resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewPar
 ```
 
 
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/007.png)
+
+
 注意三件事。  
 
 
@@ -278,7 +298,7 @@ resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewPar
 第三，`Tools` 也是每次都传的。工具的 Schema 和描述本身也是一种"隐性 Prompt"——LLM 靠它们决定什么时候用什么工具。Tool Schema 加上 System Prompt，共同构成了 Agent 的完整"世界观"。  
 
 
-## 九、设计原则
+## 八、设计原则
 
 
 回顾整个 System Prompt 的架构，有几个设计原则值得提炼。  
@@ -299,7 +319,7 @@ resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewPar
 **每一行都付代价。** System Prompt 的每一行，每一轮都要被 LLM 重新处理。所以和 Agent.md 一样的原则——如果去掉这一行 Agent 不会犯错，就不该写。  
 
 
-## 十、最后
+## 九、最后
 
 
 System Prompt 是 Agent 的灵魂。  
@@ -318,6 +338,9 @@ evo-agent 在这个问题上的答案是 Builder 模式——拆分来源、明�
 
 
 不一定是最优解，但它解决了一个真实的工程问题：**当 Agent 的能力越来越多，怎么把越来越多的"规矩"有序地塞进有限的 token 预算里。**  
+
+
+![截图](https://res2026.tiankonguse.com/images/2026/05/28/008.png)
 
 
 ```mermaid

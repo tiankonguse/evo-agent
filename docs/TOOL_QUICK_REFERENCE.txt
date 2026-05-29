@@ -1,0 +1,291 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║           EVO-AGENT TOOL SYSTEM - QUICK REFERENCE CARD                     ║
+║                      2026-05-28 Analysis Summary                           ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+┌─ THE 5 CORE PATTERNS ─────────────────────────────────────────────────────┐
+│                                                                             │
+│  1. TOOL REGISTRY (tool.go)                                                │
+│     ├─ What: Central registry for all tools                                │
+│     ├─ How: Each tool calls Register() in init()                           │
+│     ├─ Key Types: ToolDef, Handler, registry map                           │
+│     └─ Benefit: Decoupled, no central file needed                          │
+│                                                                             │
+│  2. TASK TOOL (task.go)                                                    │
+│     ├─ What: Spawn subagent with fresh context                             │
+│     ├─ How: Callback injection (var subagentRunner)                        │
+│     ├─ Key: Avoids import cycle (agent ↔ tools)                            │
+│     └─ Result: Summary text returned to parent                             │
+│                                                                             │
+│  3. TODO MANAGER (todo.go)                                                 │
+│     ├─ What: Session plan with stale detection                             │
+│     ├─ State: GlobalTodo singleton (RWMutex)                               │
+│     ├─ Logic: Round counter → reminder after 3 turns                       │
+│     └─ Integration: Injected into tool results by agent loop               │
+│                                                                             │
+│  4. PLAN MANAGER (plan.go)                                                 │
+│     ├─ What: Persistent task graph on disk                                 │
+│     ├─ Storage: .tasks/todo/ and .tasks/done/                              │
+│     ├─ Structure: plan.md + task_N.json files                              │
+│     └─ Graph: Bidirectional dependencies (BlockedBy ↔ Blocks)              │
+│                                                                             │
+│  5. EXECUTOR (executor.go)                                                 │
+│     ├─ What: Single function that processes all tool calls                 │
+│     ├─ Flow: Iterate blocks → Dispatch → Collect → Persist                 │
+│     ├─ Output: Large files saved, paths returned inline                    │
+│     └─ Errors: Set isError flag on results                                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TOOL REGISTRATION PATTERN ──────────────────────────────────────────────────┐
+│                                                                              │
+│  STEP 1: Define Input Struct (with jsonschema tags)                        │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ type TaskInput struct {                                                 │ │
+│  │     Prompt string `json:"prompt" jsonschema_description:"..."`         │ │
+│  │ }                                                                       │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  STEP 2: Register in init()                                                │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │ func init() {                                                           │ │
+│  │     Register(ToolDef{                                                  │ │
+│  │         Schema: anthropic.ToolParam{                                   │ │
+│  │             Name: "task",                                              │ │
+│  │             Description: anthropic.String("..."),                      │ │
+│  │             InputSchema: GenerateSchema[TaskInput](),  // ← Auto      │ │
+│  │         },                                                              │ │
+│  │         Handler: func(input json.RawMessage) (string, error) {        │ │
+│  │             var in TaskInput                                           │ │
+│  │             json.Unmarshal(input, &in)                               │ │
+│  │             return doWork(in), nil                                     │ │
+│  │         },                                                              │ │
+│  │     })                                                                  │ │
+│  │ }                                                                       │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ✓ Schema auto-generated from struct tags                                  │
+│  ✓ Handler receives same struct type                                       │
+│  ✓ Tool automatically discovered                                           │
+│                                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ AGENT LOOP FLOW ─────────────────────────────────────────────────────────┐
+│                                                                             │
+│  Loop Iteration:                                                            │
+│                                                                             │
+│    1. autoCompact()                                                         │
+│       └─ Micro-compact recent results                                      │
+│       └─ Full LLM summarization if needed                                  │
+│                                                                             │
+│    2. client.Messages.New(system, messages, tools)                         │
+│       └─ Call LLM with system prompt + conversation + all tools            │
+│                                                                             │
+│    3. Append assistant response to history                                 │
+│       └─ Messages now has assistant's thinking + tool calls                │
+│                                                                             │
+│    4. toolResults := Execute(response.Content)                             │
+│       └─ Dispatch all tool calls                                           │
+│       └─ Collect results + persist large outputs                           │
+│                                                                             │
+│    5. Check todo usage → inject reminder                                   │
+│       └─ Did model call todo tool? Reset counter.                          │
+│       └─ Stale? Append reminder to toolResults.                            │
+│                                                                             │
+│    6. Append tool results as USER message                                  │
+│       └─ state.Messages = append(state.Messages,                           │
+│              NewUserMessage(toolResults...))                               │
+│                                                                             │
+│    7. Loop continues if toolResults != empty                               │
+│       └─ Go to step 1 if model called tools                                │
+│       └─ Return if model stopped requesting tools                          │
+│                                                                             │
+│  KEY: Tool results are appended as USER message, not assistant!            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ SINGLETON STATE MANAGERS ────────────────────────────────────────────────┐
+│                                                                            │
+│  GlobalTodo (in-memory, session-scoped)                                   │
+│  ├─ Type: *todoManager with RWMutex                                      │
+│  ├─ State: items[], roundsSinceUpdate int                                 │
+│  ├─ Lifecycle: Empty at startup, updated via todo tool                    │
+│  └─ Reminder: "Refresh plan" after 3 turns without update                 │
+│                                                                            │
+│  GlobalPlan (persistent, disk-based)                                      │
+│  ├─ Type: *PlanManager with RWMutex                                      │
+│  ├─ Storage: .tasks/todo/ and .tasks/done/                                │
+│  ├─ Structure: plan.md + task_N.json files                                │
+│  ├─ Dependencies: Bidirectional (task 1 blocks task 2 ↔ task 2 blocked)   │
+│  └─ Operations: Create, TaskCreate, TaskUpdate, TaskList, Complete        │
+│                                                                            │
+│  GlobalMemory (persistent, SQLite)                                        │
+│  ├─ Type: *MemoryManager with RWMutex                                    │
+│  ├─ Storage: .memories database                                           │
+│  └─ Used by: remember tool for session context                            │
+│                                                                            │
+│  Agent.Messages (stack-scoped, append-only)                               │
+│  ├─ Type: []MessageParam                                                  │
+│  ├─ Lifecycle: Grows during agent loop                                    │
+│  └─ Compact: Summarized when size exceeds limit                           │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ INITIALIZATION SEQUENCE ─────────────────────────────────────────────────┐
+│                                                                            │
+│  func main() {                                                             │
+│      config.LoadEnv()                  // 1. Load env vars                 │
+│      cfg := config.Load()              // 2. Parse config                 │
+│      client := NewClient()             // 3. Create LLM client            │
+│                                                                            │
+│      tools.InitMCP()                   // 4. Start MCP servers            │
+│      defer tools.ShutdownMCP()                                            │
+│                                                                            │
+│      tools.GlobalMemory.Init(projectDir)    // 5. Load memories           │
+│      tools.InitPlan(projectDir)             // 6. Set .tasks/ path        │
+│                                                                            │
+│      skills.Init()                    // 7. Load slash commands           │
+│                                                                            │
+│      builder := prompt.NewBuilder()   // 8. Build system prompt           │
+│      a := agent.New(client, cfg, builder)   // 9. Create agent            │
+│         ↑                                                                  │
+│         └─ Registers subagent callback:                                    │
+│            tools.RegisterSubagentRunner(                                   │
+│                func(sys, msgs) string { return a.RunSubagent(...) }       │
+│            )                                                               │
+│                                                                            │
+│      tools.PrintToolList()             // 10. Display tools               │
+│      a.Run()                           // 11. Start REPL/TUI              │
+│  }                                                                         │
+│                                                                            │
+│  ⚠️  CRITICAL: agent.New() registers the callback that task.go needs!    │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ ERROR HANDLING ──────────────────────────────────────────────────────────┐
+│                                                                            │
+│  Scenario                         Handling                Result         │
+│  ─────────────────────────────────────────────────────────────────────   │
+│  Invalid tool input JSON          Unmarshal error        (msg, err) →    │
+│                                   return ("", err)       error flag set   │
+│                                                                            │
+│  Tool logic error                 Catch in Execute()     (msg, err) →    │
+│                                   return (err, nil)      error flag set   │
+│                                                                            │
+│  Tool not registered              Dispatch() silent      return ""        │
+│                                   return ("", nil)       model retries    │
+│                                                                            │
+│  Dependency uninitialized         Return error message   ("Error: ...", nil)
+│  (e.g., subagentRunner nil)       visible to model                       │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ THREAD SAFETY ───────────────────────────────────────────────────────────┐
+│                                                                            │
+│  State              Sync Mechanism      Usage Pattern                     │
+│  ──────────────────────────────────────────────────────────────────────   │
+│  GlobalTodo         sync.RWMutex        Read: Reminder()                 │
+│                                         Write: Update()                   │
+│                                         Used by: Agent loop + TUI         │
+│                                                                            │
+│  GlobalPlan         sync.RWMutex        Lock entire file operation       │
+│                                         Used by: Tool handlers            │
+│                                                                            │
+│  Agent.Messages     Append-only         Last writer wins                  │
+│                     (no lock)           Safe for append, read-only view   │
+│                                                                            │
+│  CompactState       Immutable            Passed by value                   │
+│                     (value type)        No synchronization needed         │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ KEY FILES & LOCATIONS ───────────────────────────────────────────────────┐
+│                                                                            │
+│  src/internal/tools/                                                      │
+│  ├── tool.go              Registry + dispatch (core)                      │
+│  ├── task.go              Subagent delegation                             │
+│  ├── todo.go              Session planning                                │
+│  ├── plan.go              Persistent task graph                           │
+│  ├── executor.go          Tool execution + result handling                │
+│  ├── bash.go              Execute shell commands                          │
+│  ├── read_file.go         Read files                                      │
+│  ├── write_file.go        Write files                                     │
+│  ├── memory.go            Remember tool + memory management               │
+│  └── ... (10+ more tools)                                                 │
+│                                                                            │
+│  src/internal/agent/                                                      │
+│  └── loop.go              Agent loop + compaction + subagent runner       │
+│                                                                            │
+│  src/main.go              Startup sequence + initialization               │
+│                                                                            │
+│  .tasks/                  (created by InitPlan)                           │
+│  ├── todo/2026-05-28-xxx/ Active plans                                    │
+│  │   ├── plan.md                                                          │
+│  │   └── task_N.json                                                      │
+│  └── done/2026-05-27-xxx/ Completed plans                                 │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ ADDING A NEW TOOL ───────────────────────────────────────────────────────┐
+│                                                                            │
+│  File: src/internal/tools/search.go                                       │
+│                                                                            │
+│  package tools                                                             │
+│                                                                            │
+│  import (                                                                  │
+│      "encoding/json"                                                      │
+│      "github.com/anthropics/anthropic-sdk-go"                             │
+│  )                                                                         │
+│                                                                            │
+│  type SearchInput struct {                                                │
+│      Query string `json:"query" jsonschema_description:"Search term"`    │
+│      Limit int    `json:"limit" jsonschema_description:"Max results"`    │
+│  }                                                                         │
+│                                                                            │
+│  func init() {                                                             │
+│      Register(ToolDef{                                                    │
+│          Schema: anthropic.ToolParam{                                     │
+│              Name:        "search",                                       │
+│              Description: anthropic.String("Search for information"),     │
+│              InputSchema: GenerateSchema[SearchInput](),                  │
+│          },                                                                │
+│          Handler: func(input json.RawMessage) (string, error) {          │
+│              var in SearchInput                                           │
+│              if err := json.Unmarshal(input, &in); err != nil {          │
+│                  return "", err                                           │
+│              }                                                             │
+│              if in.Limit == 0 {                                           │
+│                  in.Limit = 10                                            │
+│              }                                                             │
+│              return doSearch(in.Query, in.Limit), nil                     │
+│          },                                                                │
+│      })                                                                    │
+│  }                                                                         │
+│                                                                            │
+│  ✓ Tool automatically registered via init()                               │
+│  ✓ Available immediately to agent                                         │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  DOCUMENTS GENERATED                                                       ║
+║  ────────────────────────────────────────────────────────────────────────  ║
+║                                                                             ║
+║  1. TOOL_PATTERNS.md (322 lines)                                           ║
+║     Quick reference with 5 core patterns, schema generation, common        ║
+║     patterns, error handling, and performance considerations.              ║
+║                                                                             ║
+║  2. evo-agent-tool-patterns-analysis.md (1060 lines)                       ║
+║     Deep dive with full code examples, architecture diagrams,              ║
+║     initialization sequence, key insights, and registration examples.      ║
+║                                                                             ║
+║  3. TOOL_QUICK_REFERENCE.txt (this file, 322 lines)                       ║
+║     Visual reference card with ASCII diagrams and quick lookups.           ║
+║                                                                             ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+Location:
+  - /Users/tiankonguse-m3/evo-agent-tool-patterns-analysis.md
+  - /Users/tiankonguse-m3/project/github/AIProject/evo-agent/TOOL_PATTERNS.md
+  - /Users/tiankonguse-m3/project/github/AIProject/evo-agent/TOOL_QUICK_REFERENCE.txt
+

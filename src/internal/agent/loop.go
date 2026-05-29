@@ -22,7 +22,6 @@ type Agent struct {
 	client      *anthropic.Client
 	cfg         *config.Config
 	prompt      *prompt.Builder
-	DumpPrompts bool   // toggle via /dump-prompts
 	dumpFile    string // session dump file path (set on first dump)
 }
 
@@ -101,11 +100,6 @@ func (a *Agent) Loop(state *LoopState) bool {
 
 		systemPrompt := a.prompt.Build()
 
-		// Dump API call if enabled
-		if a.DumpPrompts {
-			a.DumpAPICall(systemPrompt, state.Messages)
-		}
-
 		resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewParams{
 			Model: anthropic.Model(a.cfg.ModelID),
 			System: []anthropic.TextBlockParam{
@@ -164,17 +158,14 @@ func (a *Agent) Loop(state *LoopState) bool {
 		}
 
 		// ── Todo reminder injection ───────────────────────────────────────────
-		// Track whether the model used the todo tool this turn and, if not,
-		// inject a reminder after todoReminderInterval rounds without a plan update.
-		usedTodo := false
-		for _, block := range resp.Content {
-			if block.Type == "tool_use" && block.Name == "todo" {
-				usedTodo = true
-				break
-			}
-		}
-		tools.GlobalTodo.NoteRound(usedTodo)
+		tools.GlobalTodo.NoteRound(tools.CheckTodoUsed(resp.Content))
 		if reminder := tools.GlobalTodo.Reminder(); reminder != "" {
+			toolResults = append(toolResults, anthropic.NewTextBlock(reminder))
+		}
+
+		// ── Plan reminder injection ────────────────────────────────────────
+		tools.GlobalPlan.NoteRound(tools.CheckPlanUsed(resp.Content))
+		if reminder := tools.GlobalPlan.Reminder(); reminder != "" {
 			toolResults = append(toolResults, anthropic.NewTextBlock(reminder))
 		}
 
@@ -205,12 +196,8 @@ func (a *Agent) Run(r io.Reader) {
 
 		// ── Client-side commands (not sent to LLM) ──
 		if query == "/dump-prompts" {
-			on := a.ToggleDumpPrompts()
-			if on {
-				fmt.Println("[dump-prompts: ON]")
-			} else {
-				fmt.Println("[dump-prompts: OFF]")
-			}
+			a.DumpNow(history)
+			fmt.Println("[dump-prompts: dumped current state]")
 			continue
 		}
 

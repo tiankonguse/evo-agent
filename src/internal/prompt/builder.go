@@ -55,7 +55,7 @@ const toolUsageText = `# Using your tools
    - To read files use read_file instead of cat/head/tail
    - To edit files use edit_file instead of sed/awk
    - To create files use write_file instead of echo/heredoc
- - Break down and manage your work with the todo tool. Mark each task as completed as soon as you finish it.
+ - For multi-step work, use plan_* (session plan) to track the big picture and todo_* (memory plan) to track small steps within each task. Always mark tasks/steps completed as soon as you finish them.
  - You can call multiple tools in a single response. If there are no dependencies between tool calls, make all independent calls in parallel for efficiency.`
 
 const toneStyleText = `# Tone and style
@@ -100,6 +100,12 @@ type SkillsProvider interface {
 	SlashNames() []string
 }
 
+// PlanProvider abstracts access to the session plan system.
+// tools.GlobalPlan satisfies this interface directly.
+type PlanProvider interface {
+	LoadPrompt() string
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Builder
 // ────────────────────────────────────────────────────────────────────────────
@@ -111,8 +117,10 @@ type Builder struct {
 	cfg            *config.Config
 	memory         MemoryProvider
 	skills         SkillsProvider
+	plan           PlanProvider
 	agentMdContent string // loaded once at startup
 	memoryGuidance string // constant guidance text
+	planGuidance   string // constant plan workflow guidance
 }
 
 // NewBuilder creates a prompt builder with the given dependencies.
@@ -132,6 +140,16 @@ func (b *Builder) SetAgentMd(content string) {
 // SetMemoryGuidance sets the memory guidance constant text.
 func (b *Builder) SetMemoryGuidance(guidance string) {
 	b.memoryGuidance = guidance
+}
+
+// SetPlanProvider sets the session plan provider for dynamic status injection.
+func (b *Builder) SetPlanProvider(p PlanProvider) {
+	b.plan = p
+}
+
+// SetPlanGuidance sets the session plan workflow guidance text.
+func (b *Builder) SetPlanGuidance(guidance string) {
+	b.planGuidance = guidance
 }
 
 // Build assembles the full system prompt by joining all sections.
@@ -159,6 +177,7 @@ func (b *Builder) BuildSections() []string {
 		b.buildOutputEfficiency(), // Brief, direct, no filler
 		b.buildSlashCommands(),    // Slash command introduction
 		b.buildMemoryGuidance(),   // When to use the remember tool
+		b.buildPlanGuidance(),     // When to use session plans
 
 		// ── Boundary marker ─────────────────────────────────────────────
 		DynamicBoundary,
@@ -171,6 +190,7 @@ func (b *Builder) BuildSections() []string {
 
 		// 记忆可能变化，模型可能切换
 		b.buildMemories(),    // Persistent memories across sessions
+		b.buildPlanStatus(),  // Active session plans status
 		b.buildEnvironment(), // Git, shell, OS, model, date
 	}
 
@@ -232,6 +252,17 @@ func (b *Builder) buildMemories() string {
 
 func (b *Builder) buildMemoryGuidance() string {
 	return b.memoryGuidance
+}
+
+func (b *Builder) buildPlanGuidance() string {
+	return b.planGuidance
+}
+
+func (b *Builder) buildPlanStatus() string {
+	if b.plan == nil {
+		return ""
+	}
+	return b.plan.LoadPrompt()
 }
 
 func (b *Builder) buildSkillsCatalog() string {

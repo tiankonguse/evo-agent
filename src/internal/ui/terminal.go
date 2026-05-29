@@ -58,7 +58,12 @@ func PrintDone() {
 	globalSink.Emit(Event{Kind: EvDone})
 }
 
-// EmitTodo broadcasts an updated session plan to the active sink.
-func EmitTodo(items []TodoItem) {
-	globalSink.Emit(Event{Kind: EvTodo, TodoItems: items})
+// EmitTodo broadcasts an updated memory plan to the active sink.
+func EmitTodo(items []TodoItem, topic string) {
+	globalSink.Emit(Event{Kind: EvTodo, TodoItems: items, TodoTopic: topic})
+}
+
+// EmitPlan broadcasts updated session plan snapshots to the active sink.
+func EmitPlan(plans []PlanSnapshot) {
+	globalSink.Emit(Event{Kind: EvPlan, PlanItems: plans})
 }

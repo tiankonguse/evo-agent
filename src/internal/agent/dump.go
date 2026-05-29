@@ -57,8 +57,8 @@ func (a *Agent) DumpAPICall(system string, messages []anthropic.MessageParam) {
 	f.WriteString("\n")
 }
 
-// ToggleDumpPrompts toggles the dump-prompts mode and returns the new state.
-func (a *Agent) ToggleDumpPrompts() bool {
-	a.DumpPrompts = !a.DumpPrompts
-	return a.DumpPrompts
+// DumpNow immediately dumps the current system prompt and messages.
+func (a *Agent) DumpNow(messages []anthropic.MessageParam) {
+	systemPrompt := a.prompt.Build()
+	a.DumpAPICall(systemPrompt, messages)
 }

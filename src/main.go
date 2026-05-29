@@ -62,6 +62,14 @@ func main() {
 	// Load persistent memories
 	tools.GlobalMemory.Init(cfg.ProjectDir)
 
+	// Initialize session plan/task system
+	tools.InitPlan(cfg.ProjectDir)
+
+	// Print active session plan status at startup
+	if summary := tools.GlobalPlan.StartupSummary(); summary != "" {
+		fmt.Println(summary)
+	}
+
 	// Load skills and commands
 	skills.Init()
 
@@ -75,6 +83,10 @@ func main() {
 
 	// Set memory guidance
 	builder.SetMemoryGuidance(tools.MemoryGuidance)
+
+	// Set session plan guidance and provider
+	builder.SetPlanGuidance(tools.PlanGuidance)
+	builder.SetPlanProvider(tools.GlobalPlan)
 
 	a := agent.New(&client, cfg, builder)
 
@@ -123,12 +135,8 @@ func main() {
 		for query := range queryCh {
 			// ── Client-side commands (not sent to LLM) ──
 			if query == "/dump-prompts" {
-				on := a.ToggleDumpPrompts()
-				if on {
-					ui.PrintSystem("[dump-prompts: ON]")
-				} else {
-					ui.PrintSystem("[dump-prompts: OFF]")
-				}
+				a.DumpNow(history)
+				ui.PrintSystem("[dump-prompts: dumped current state]")
 				ui.PrintDone()
 				continue
 			}

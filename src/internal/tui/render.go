@@ -131,10 +131,10 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
-// renderTodoPanel renders the session plan as a compact bordered panel.
+// renderTodoPanel renders the memory plan as a compact bordered panel.
 // Returns "" when there are no items so callers can skip it cleanly.
-func renderTodoPanel(items []ui.TodoItem, width int) string {
-	if len(items) == 0 {
+func renderTodoPanel(items []ui.TodoItem, topic string, width int) string {
+	if len(items) == 0 && topic == "" {
 		return ""
 	}
 
@@ -145,7 +145,11 @@ func renderTodoPanel(items []ui.TodoItem, width int) string {
 	}
 
 	var lines []string
-	lines = append(lines, todoHeaderStyle.Render("▸ Session Plan"))
+	header := "▸ Memory Plan"
+	if topic != "" {
+		header += ": " + topic
+	}
+	lines = append(lines, todoHeaderStyle.Render(header))
 
 	completed := 0
 	for _, item := range items {
@@ -154,16 +158,16 @@ func renderTodoPanel(items []ui.TodoItem, width int) string {
 		case "completed":
 			completed++
 			marker = todoCompletedStyle.Render("[x]")
-			styledLine = todoCompletedStyle.Render(item.Content)
+			styledLine = todoCompletedStyle.Render(fmt.Sprintf("#%d %s", item.ID, item.Content))
 		case "in_progress":
 			marker = todoInProgressStyle.Render("[>]")
-			styledLine = todoInProgressStyle.Render(item.Content)
+			styledLine = todoInProgressStyle.Render(fmt.Sprintf("#%d %s", item.ID, item.Content))
 			if item.ActiveForm != "" {
 				styledLine += " " + todoActiveFormStyle.Render("("+item.ActiveForm+")")
 			}
 		default: // pending
 			marker = todoPendingStyle.Render("[ ]")
-			styledLine = todoPendingStyle.Render(item.Content)
+			styledLine = todoPendingStyle.Render(fmt.Sprintf("#%d %s", item.ID, item.Content))
 		}
 		lines = append(lines, fmt.Sprintf(" %s %s", marker, styledLine))
 	}
@@ -187,4 +191,57 @@ func buildProgressBar(done, total, width int) string {
 	filled := done * width / total
 	bar := "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
 	return bar
+}
+
+// renderPlanPanel renders the session plan tasks as a compact bordered panel.
+// Returns "" when there are no active plans so callers can skip it cleanly.
+func renderPlanPanel(plans []ui.PlanSnapshot, width int) string {
+	if len(plans) == 0 {
+		return ""
+	}
+
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+
+	var lines []string
+	for _, plan := range plans {
+		lines = append(lines, planHeaderStyle.Render("▸ Plan: "+plan.Name))
+
+		completed := 0
+		for _, task := range plan.Tasks {
+			var marker, styledLine string
+			switch task.Status {
+			case "completed":
+				completed++
+				marker = todoCompletedStyle.Render("[x]")
+				styledLine = todoCompletedStyle.Render(fmt.Sprintf("#%d %s", task.ID, task.Subject))
+			case "in_progress":
+				marker = todoInProgressStyle.Render("[>]")
+				styledLine = todoInProgressStyle.Render(fmt.Sprintf("#%d %s", task.ID, task.Subject))
+			case "deleted":
+				marker = todoPendingStyle.Render("[-]")
+				styledLine = todoPendingStyle.Render(fmt.Sprintf("#%d %s", task.ID, task.Subject))
+			default: // pending
+				marker = todoPendingStyle.Render("[ ]")
+				styledLine = todoPendingStyle.Render(fmt.Sprintf("#%d %s", task.ID, task.Subject))
+				if len(task.BlockedBy) > 0 {
+					styledLine += todoActiveFormStyle.Render(fmt.Sprintf(" (blocked by %v)", task.BlockedBy))
+				}
+			}
+			lines = append(lines, fmt.Sprintf(" %s %s", marker, styledLine))
+		}
+
+		// Progress footer
+		total := len(plan.Tasks)
+		progressBar := buildProgressBar(completed, total, innerW-20)
+		footer := todoActiveFormStyle.Render(
+			fmt.Sprintf("%s %d/%d completed", progressBar, completed, total),
+		)
+		lines = append(lines, footer)
+	}
+
+	inner := strings.Join(lines, "\n")
+	return planBorderStyle.Width(width - 2).Render(inner)
 }

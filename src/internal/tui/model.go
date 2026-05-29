@@ -47,8 +47,12 @@ type Model struct {
 	// Status bar info
 	info SidebarInfo
 
-	// Session plan items (updated via EvTodo)
+	// Memory plan items (updated via EvTodo)
 	todoItems []ui.TodoItem
+	todoTopic string
+
+	// Persistent plan items (updated via EvPlan)
+	planItems []ui.PlanSnapshot
 
 	// Slash command completion
 	completionActive bool     // dropdown is visible
@@ -312,6 +316,11 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 	case ui.EvTodo:
 		// Store updated plan; View() will re-render it live
 		m.todoItems = e.TodoItems
+		m.todoTopic = e.TodoTopic
+
+	case ui.EvPlan:
+		// Store updated session plan; View() will re-render it live
+		m.planItems = e.PlanItems
 	}
 
 	return m, tea.Batch(cmds...)
@@ -334,8 +343,13 @@ func (m *Model) View() tea.View {
 		parts = append(parts, renderToolCall(b, w-2))
 	}
 
-	// Show session plan when items exist
-	if panel := renderTodoPanel(m.todoItems, w); panel != "" {
+	// Show memory plan when items exist
+	if panel := renderTodoPanel(m.todoItems, m.todoTopic, w); panel != "" {
+		parts = append(parts, panel)
+	}
+
+	// Show session plan when active
+	if panel := renderPlanPanel(m.planItems, w); panel != "" {
 		parts = append(parts, panel)
 	}
 

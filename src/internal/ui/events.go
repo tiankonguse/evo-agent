@@ -12,13 +12,29 @@ const (
 	EvTokens                     // Token usage update
 	EvDone                       // Agent finished a turn
 	EvTodo                       // Session plan updated
+	EvPlan                       // Persistent plan updated
 )
 
-// TodoItem is one entry in the session plan.
+// TodoItem is one entry in the memory plan.
 type TodoItem struct {
+	ID         int
 	Content    string
 	Status     string // "pending" | "in_progress" | "completed"
 	ActiveForm string // present-continuous label shown while in_progress
+}
+
+// PlanTaskItem is one task in a session plan, for TUI rendering.
+type PlanTaskItem struct {
+	ID        int
+	Subject   string
+	Status    string // "pending" | "in_progress" | "completed" | "deleted"
+	BlockedBy []int
+}
+
+// PlanSnapshot is the TUI-visible summary of an active session plan.
+type PlanSnapshot struct {
+	Name  string
+	Tasks []PlanTaskItem
 }
 
 // Event is a union struct carrying data for any EventKind.
@@ -47,4 +63,8 @@ type Event struct {
 
 	// EvTodo
 	TodoItems []TodoItem
+	TodoTopic string
+
+	// EvPlan
+	PlanItems []PlanSnapshot
 }

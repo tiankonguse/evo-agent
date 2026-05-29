@@ -17,6 +17,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **MCP Client Support**: Connect to external MCP tool servers via `stdio`, `sse`, or `streamableHttp` transports; config loaded from `.evo-agent/mcp.json`
 - **Skill System**: Two-layer on-demand knowledge — cheap catalog injected into system prompt; full skill body loaded only when needed via `load_skill`
 - **Session Planning (todo)**: Built-in `todo` tool lets the model maintain a live session plan (max 12 items, exactly one `in_progress` at a time); a 3-round reminder is injected when the plan goes stale; the TUI renders a real-time plan panel at the bottom
+- **Persistent Session Plan (plan_\*)**: Two-layer planning — the in-memory `todo` is for short steps, while the disk-backed `plan_*` tool family stores big tasks as a directory of JSON files under `.evo-agent/tasks/todo/<YYYY-MM-DD-name>/`; survives context compaction and process restarts; supports a task dependency graph (`blockedBy` / `blocks`, bidirectionally synced); active plan summary auto-injected into the system prompt; 5-round stale-reminder; on startup the active plans are printed and re-injected so the agent picks up exactly where it left off
 - **Subagent (task tool)**: `task` tool spawns an isolated child agent with a fresh context to delegate complex subtasks; child shares the filesystem but not conversation history; only a text summary is returned to the parent; recursive spawning is prevented by stripping `task` from child's tool list; hard cap of 30 turns per subagent
 - **Dump Prompts Debugging**: `/dump-prompts` toggle saves every API call (system prompt + messages) to `.evo-agent/dump-prompts/` as JSONL for prompt inspection and debugging
 
@@ -57,6 +58,7 @@ src/
     │   ├── compact.go         # compact tool (model-initiated context compaction)
     │   ├── skill.go           # load_skill tool (load full skill body on demand)
     │   ├── todo.go            # todo tool (session plan, max 12 items, reminder injection)
+    │   ├── plan.go            # persistent session plan: plan_create / plan_list / plan_task_create / plan_task_update / plan_task_list / plan_task_get / plan_complete; disk-backed task graph under .evo-agent/tasks/
     │   └── task.go            # task tool (spawn subagent), RegisterSubagentRunner callback
     ├── tui/
     │   ├── run.go             # Run(): create Sink, start Bubble Tea program
@@ -166,6 +168,13 @@ After starting the agent, type your request at the prompt. The TUI renders outpu
 | `compact`     | Summarize the conversation history to free up context window; accepts an optional `focus` hint |
 | `load_skill`  | Load the full body of a named skill into context; use before acting on tasks that need specialized instructions |
 | `todo`        | Rewrite the current session plan (max 12 items, exactly one `in_progress`); refreshes the live TUI plan panel |
+| `plan_create` | Create a new persistent session plan directory `.evo-agent/tasks/todo/<YYYY-MM-DD-name>/` with `plan.md` (analysis + approach + steps) |
+| `plan_list`   | List all session plans — active in `todo/` and archived in `done/` — with task progress |
+| `plan_task_create` | Add a task to a session plan; supports `blockedBy` to declare dependencies (the `blocks` field is auto-synced on the other side) |
+| `plan_task_update` | Update a task's status (`pending` / `in_progress` / `completed` / `deleted`), owner, or dependency edges; completing a task auto-clears it from other tasks' `blockedBy` lists |
+| `plan_task_list`   | List all tasks in a plan with status markers, ownership, and blocking info |
+| `plan_task_get`    | Fetch full JSON of a single task (subject, description, status, dependencies, owner) |
+| `plan_complete`    | Move a finished plan from `todo/` to `done/`; refuses to archive if any task is still pending or in_progress |
 | `task`        | Spawn a subagent with fresh context to complete a subtask; shares filesystem but not history; returns a text summary; max 30 turns |
 
 ### MCP Tools
@@ -331,11 +340,13 @@ That's it — the tool is automatically available to the agent on next run.
 | [11-auto-memory](blog/11-auto-memory.md) | Auto Memory — persistent memory system, remember tool, consolidation, memory guidance injection |
 | [12-agent-markdown](blog/12-agent-markdown.md) | Agent.md — project guidance file, /init built-in command, go:embed built-in commands |
 | [13-system-prompt](blog/13-systerm-prompt.md) | System Prompt — structured builder pattern, static/dynamic boundary, environment injection, dump-prompts debugging |
+| [14-session-plan](blog/14-session-plan.md) | Persistent Session Plan — disk-backed task graph, two-layer planning (Memory Plan + Session Plan), `blockedBy`/`blocks` bidirectional dependency, startup recovery, system-prompt injection |
 
 ## Version History
 
 | Version | Description |
 |---------|-------------|
+| **v0.14.0** | Add persistent session plan: `internal/tools/plan.go` introduces a disk-backed task graph at `.evo-agent/tasks/todo/<YYYY-MM-DD-name>/` (each plan = directory of `plan.md` + `task_N.json`); 7 new tools (`plan_create`, `plan_list`, `plan_task_create`, `plan_task_update`, `plan_task_list`, `plan_task_get`, `plan_complete`); two-layer planning model (in-memory `todo` for short steps, on-disk `plan_*` for big tasks); bidirectional dependency graph (`blockedBy` / `blocks`) with auto-sync on task creation/update and auto-clear on completion; single-active-plan invariant prevents concurrent in-progress plans; 5-round stale reminder when an active plan goes idle; `LoadPrompt()` injects active plan summary into the system prompt's `# Active Plans` section; `StartupSummary()` prints the active plan tree on launch; finished plans are archived from `todo/` to `done/` via `plan_complete`; survives context compaction and process restarts |
 | **v0.13.0** | Add system prompt builder: `internal/prompt` package with `Builder` struct assembles prompt from independent sections; static/dynamic boundary (`DynamicBoundary`) separates cacheable content from per-session context; `MemoryProvider` and `SkillsProvider` interfaces for dependency injection; environment section injects runtime context (git, platform, shell, model, date); `/dump-prompts` toggle saves API calls to `.evo-agent/dump-prompts/*.jsonl` for debugging; `skills.Provider` adapter satisfies prompt interfaces |
 | **v0.12.0** | Add `/init` built-in command and Agent.md loading: `/init` analyzes codebase structure and generates `Agent.md` project guidance file; `Agent.md` is read at startup and injected into system prompt; built-in commands embedded via `//go:embed` survive across clones; user commands in `.evo-agent/command/` override built-ins with the same name |
 | **v0.11.0** | Add auto memory: persistent memory system (`MemoryManager`, `.evo-agent/memory/`); `remember` tool spawns extraction subagent to analyze conversation and persist user preferences, feedback, project facts, and references; `consolidate_memory` tool merges duplicates and prunes stale entries; memory guidance injected into system prompt; memories auto-loaded at startup and formatted into context; built-in commands (`/remember`, `/consolidate`) embedded via `//go:embed` |
