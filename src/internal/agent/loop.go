@@ -12,6 +12,7 @@ import (
 
 	"evo-agent/internal/config"
 	"evo-agent/internal/prompt"
+	"evo-agent/internal/session"
 	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 	"evo-agent/internal/ui"
@@ -19,10 +20,20 @@ import (
 
 // Agent orchestrates multi-turn conversations with the model.
 type Agent struct {
-	client      *anthropic.Client
-	cfg         *config.Config
-	prompt      *prompt.Builder
-	dumpFile    string // session dump file path (set on first dump)
+	client   *anthropic.Client
+	cfg      *config.Config
+	prompt   *prompt.Builder
+	dumpFile string // session dump file path (set on first dump)
+
+	// session is the active persistence target. May be nil in tests.
+	session *session.Session
+
+	// currentRecorder / currentPromptID are valid only while a query is in
+	// flight. They let RunSubagent (which is invoked through a fixed-shape
+	// callback in the tools package) discover its parent session without
+	// changing the callback signature.
+	currentRecorder *session.Recorder
+	currentPromptID string
 }
 
 // New creates an Agent with the given LLM client, configuration, and prompt builder.
@@ -30,9 +41,25 @@ type Agent struct {
 func New(client *anthropic.Client, cfg *config.Config, pb *prompt.Builder) *Agent {
 	a := &Agent{client: client, cfg: cfg, prompt: pb}
 	tools.RegisterSubagentRunner(func(systemPrompt string, messages []anthropic.MessageParam) string {
-		return a.RunSubagent(systemPrompt, messages)
+		return a.RunSubagent(systemPrompt, messages, "")
+	})
+	tools.RegisterNamedSubagentRunner(func(systemPrompt, agentName string, messages []anthropic.MessageParam) string {
+		return a.RunSubagent(systemPrompt, messages, agentName)
 	})
 	return a
+}
+
+// AttachSession binds a persistent session to the agent. Subsequent
+// RunQuery / RunQueryDirect calls will record their messages, compact
+// boundaries, and subagent activity to the session transcript.
+func (a *Agent) AttachSession(s *session.Session) {
+	a.session = s
+}
+
+// Session returns the currently attached session, or nil if persistence is
+// disabled.
+func (a *Agent) Session() *session.Session {
+	return a.session
 }
 
 // autoCompact applies MicroCompact, then triggers a full LLM summarization if
@@ -53,6 +80,8 @@ func (a *Agent) autoCompact(state *LoopState) {
 		state.Messages,
 		state.CompactState,
 		"",
+		state.Recorder,
+		state.PromptID,
 	)
 	if err == nil {
 		state.Messages = newMessages
@@ -79,6 +108,8 @@ func (a *Agent) manualCompact(state *LoopState, content []anthropic.ContentBlock
 			state.Messages,
 			state.CompactState,
 			focus,
+			state.Recorder,
+			state.PromptID,
 		)
 		if err == nil {
 			state.Messages = newMessages
@@ -93,6 +124,15 @@ func (a *Agent) Loop(state *LoopState) bool {
 	if state.CompactState == nil {
 		state.CompactState = &CompactState{}
 	}
+
+	// Track the recorder/prompt for the duration of this query so that
+	// RunSubagent (called via the tools-package callback) can find them.
+	a.currentRecorder = state.Recorder
+	a.currentPromptID = state.PromptID
+	defer func() {
+		a.currentRecorder = nil
+		a.currentPromptID = ""
+	}()
 
 	for {
 		// Apply micro-compaction + auto compact before LLM call
@@ -115,7 +155,15 @@ func (a *Agent) Loop(state *LoopState) bool {
 		}
 
 		// Append assistant response to history
-		state.Messages = append(state.Messages, resp.ToParam())
+		assistantMsg := resp.ToParam()
+		state.Messages = append(state.Messages, assistantMsg)
+		state.LastUsage = TokenUsage{
+			Input:  resp.Usage.InputTokens,
+			Output: resp.Usage.OutputTokens,
+		}
+		if state.Recorder != nil {
+			state.Recorder.AppendAssistant(state.PromptID, assistantMsg, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		}
 
 		// Count content block types
 		blockCounts := map[string]int{}
@@ -170,6 +218,9 @@ func (a *Agent) Loop(state *LoopState) bool {
 		}
 
 		state.Messages = append(state.Messages, anthropic.NewUserMessage(toolResults...))
+		if state.Recorder != nil {
+			state.Recorder.AppendUser(state.PromptID, state.Messages[len(state.Messages)-1])
+		}
 		state.TurnCount++
 		state.TransitionReason = "tool_result"
 
@@ -183,6 +234,10 @@ func (a *Agent) Run(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	var history []anthropic.MessageParam
 	compactState := &CompactState{}
+	var recorder *session.Recorder
+	if a.session != nil {
+		recorder = a.session.Recorder
+	}
 
 	for {
 		fmt.Printf("%s >> %s", ui.ColorCyan, ui.ColorReset)
@@ -202,29 +257,36 @@ func (a *Agent) Run(r io.Reader) {
 		}
 
 		// ── Slash command interception ──
+		var newMsg anthropic.MessageParam
 		if result := skills.Dispatch(query); result.Found {
 			if result.Content != "" {
-				// Two-block message: prompt + skill content
-				history = append(history, anthropic.NewUserMessage(
+				newMsg = anthropic.NewUserMessage(
 					anthropic.NewTextBlock(result.Prompt),
 					anthropic.NewTextBlock(result.Content),
-				))
+				)
 			} else {
-				// Error case (unknown command): single block
-				history = append(history, anthropic.NewUserMessage(
+				newMsg = anthropic.NewUserMessage(
 					anthropic.NewTextBlock(result.Prompt),
-				))
+				)
 			}
 		} else {
-			history = append(history, anthropic.NewUserMessage(
+			newMsg = anthropic.NewUserMessage(
 				anthropic.NewTextBlock(query),
-			))
+			)
+		}
+
+		promptID := session.NewPromptID()
+		history = append(history, newMsg)
+		if recorder != nil {
+			recorder.AppendUser(promptID, newMsg)
 		}
 
 		state := &LoopState{
 			Messages:     history,
 			TurnCount:    1,
 			CompactState: compactState,
+			Recorder:     recorder,
+			PromptID:     promptID,
 		}
 		a.Loop(state)
 		history = state.Messages
@@ -247,14 +309,24 @@ func (a *Agent) Run(r io.Reader) {
 // RunQuery executes a single query and signals done via doneCh.
 // Used by the TUI mode.
 func (a *Agent) RunQuery(query string, history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
-	*history = append(*history, anthropic.NewUserMessage(
-		anthropic.NewTextBlock(query),
-	))
+	var recorder *session.Recorder
+	if a.session != nil {
+		recorder = a.session.Recorder
+	}
+	promptID := session.NewPromptID()
+
+	newMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(query))
+	*history = append(*history, newMsg)
+	if recorder != nil {
+		recorder.AppendUser(promptID, newMsg)
+	}
 
 	state := &LoopState{
 		Messages:     *history,
 		TurnCount:    1,
 		CompactState: *compactState,
+		Recorder:     recorder,
+		PromptID:     promptID,
 	}
 	a.Loop(state)
 	*history = state.Messages
@@ -266,11 +338,22 @@ func (a *Agent) RunQuery(query string, history *[]anthropic.MessageParam, compac
 // RunQueryDirect executes the agent loop without appending a new message.
 // The caller has already appended the user message(s) to history.
 // Used by slash command handling where multi-block messages are constructed.
+//
+// The caller is responsible for recording the user message they appended;
+// this function only records the loop's subsequent assistant + tool_result
+// messages.
 func (a *Agent) RunQueryDirect(history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
+	var recorder *session.Recorder
+	if a.session != nil {
+		recorder = a.session.Recorder
+	}
+
 	state := &LoopState{
 		Messages:     *history,
 		TurnCount:    1,
 		CompactState: *compactState,
+		Recorder:     recorder,
+		PromptID:     session.NewPromptID(),
 	}
 	a.Loop(state)
 	*history = state.Messages

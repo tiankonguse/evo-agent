@@ -13,3 +13,4 @@ src/evo-agent
 evo-agent
 output/
 tetris-game/
+.test-tmp/

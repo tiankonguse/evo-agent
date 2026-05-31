@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"evo-agent/internal/session"
 	"evo-agent/internal/ui"
 	"github.com/anthropics/anthropic-sdk-go"
 )
@@ -144,12 +145,19 @@ Be compact but concrete.
 
 // CompactHistory triggers full context compaction with LLM summarization.
 // Returns new message list containing only the summary.
+//
+// If recorder is non-nil, a compact_boundary record is appended to the
+// session transcript right after the summary is generated. Resume uses this
+// boundary to drop everything older than the most recent compaction while
+// still surfacing the summary to the model.
 func CompactHistory(
 	client *anthropic.Client,
 	model string,
 	messages []anthropic.MessageParam,
 	state *CompactState,
 	focus string,
+	recorder *session.Recorder,
+	promptID string,
 ) ([]anthropic.MessageParam, error) {
 	// Save transcript before compacting
 	if err := WriteTranscript(messages); err != nil {
@@ -180,6 +188,11 @@ func CompactHistory(
 	state.HasCompacted = true
 	state.LastSummary = summary
 	state.CompactCount++
+
+	// Persist a compact_boundary record so /resume can clip prior history.
+	if recorder != nil {
+		recorder.AppendCompactBoundary(promptID, summary, state.CompactCount)
+	}
 
 	ui.PrintSystem(fmt.Sprintf("[Compacted to %d chars, removed %d messages]", len(summary), len(messages)-1))
 

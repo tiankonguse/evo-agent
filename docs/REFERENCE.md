@@ -1,436 +1,704 @@
-# evo-agent Developer Reference
+# evo-agent — Architecture & Reference
 
-Consolidated reference for constants, data structures, how-to guides, and debugging.  
-See `CLAUDE.md` for the high-level architecture overview.
+Single-source **architectural** reference for evo-agent. Read this **before making changes**.
 
----
-
-## Key Constants & Limits
-
-| Constant | Value | Location | Notes |
-|----------|-------|----------|-------|
-| `CONTEXT_LIMIT` | 50 000 chars | `agent/compact.go` | Triggers auto-compact |
-| `KEEP_RECENT_RESULTS` | 3 | `agent/compact.go` | MicroCompact keeps this many full results |
-| `maxConversationBytes` | 80 000 | `agent/compact.go` | Max input to LLM summarizer |
-| `persistThreshold` | 30 000 chars | `tools/persist.go` | Large outputs saved to disk |
-| `maxReadBytes` | 50 000 | `tools/read_file.go` | read_file output cap |
-| `maxBashOutput` | 50 000 | `tools/bash.go` | bash output cap |
-| `bashTimeout` | 120 s | `tools/bash.go` | Shell command timeout |
-| `previewChars` | 2 000 | `tools/persist.go` | Preview returned for persisted output |
-| `todoMaxItems` | 12 | `tools/todo.go` | Max session-plan entries |
-| `todoReminderInterval` | 3 rounds | `tools/todo.go` | Rounds before reminder injected |
-| `MaxTokens` | 8 000 | `agent/loop.go` | Per-request output token budget |
-| `subagentMaxTurns` | 30 | `agent/subagent.go` | Max turns per subagent invocation |
+This document explains the *what* and *why* — system layout, design patterns, control flow. For **exact Go signatures, struct field tables, tool input schemas, and constant values** see [`API_REFERENCE.md`](./API_REFERENCE.md). For external SDK / skills format see [`anthropic-sdk-go.md`](./anthropic-sdk-go.md), [`skills.md`](./skills.md).
 
 ---
 
-## File Inventory
+## 1. Project Overview
 
-| File | ~LOC | Responsibility |
-|------|------|----------------|
-| `src/main.go` | 60 | Entry point, flag parsing, TUI vs plain dispatch |
-| `src/internal/agent/loop.go` | 224 | Agent loop, auto-compact, todo reminder, manual compact, `New()` wires subagent |
-| `src/internal/agent/compact.go` | 260 | MicroCompact, CompactHistory, LLM summarizer |
-| `src/internal/agent/state.go` | 25 | `LoopState`, `CompactState` structs |
-| `src/internal/agent/subagent.go` | 85 | `RunSubagent()` — isolated child agent, 30-turn cap, summary return |
-| `src/internal/agent/transcripts.go` | 80 | Write/read JSONL transcripts |
-| `src/internal/tools/tool.go` | 95 | `ToolDef`, `Register`, `Dispatch`, `Tools()`, `ToolsExcept()` |
-| `src/internal/tools/executor.go` | 60 | `Execute()` — iterates content blocks, emits UI events |
-| `src/internal/tools/mcp.go` | 710 | Full MCP client: stdio, SSE, streamableHTTP |
-| `src/internal/tools/todo.go` | 120 | `todoManager`, `GlobalTodo`, reminder logic, EvTodo emit |
-| `src/internal/tools/bash.go` | 65 | bash tool (120 s timeout, 50 KB cap) |
-| `src/internal/tools/read_file.go` | 60 | read_file tool |
-| `src/internal/tools/write_file.go` | 45 | write_file tool (auto mkdir -p) |
-| `src/internal/tools/edit_file.go` | 70 | edit_file tool (exact-string replace) |
-| `src/internal/tools/task.go` | 47 | `task` tool registration, `subagentRunner` var, `RegisterSubagentRunner()` |
-| `src/internal/tools/skill.go` | 35 | load_skill tool |
-| `src/internal/tools/compact.go` | 10 | compact tool registration |
-| `src/internal/tools/persist.go` | 45 | Large output persistence |
-| `src/internal/config/config.go` | 50 | Env-var config, `.env` loading |
-| `src/internal/skills/registry.go` | 85 | Skill manifest loading, catalog, InitCommands |
-| `src/internal/skills/builtin.go` | 60 | Built-in commands via go:embed, LoadBuiltinCommands() |
-| `src/internal/ui/terminal.go` | 65 | `Print*` helpers, ANSI constants, `EmitTodo` |
-| `src/internal/ui/sink.go` | ~50 | `EventSink` interface, `TerminalSink`, `globalSink` |
-| `src/internal/ui/events.go` | ~50 | `Event`, `EventKind`, `TodoItem` types |
-| `src/internal/tui/model.go` | 315 | Bubble Tea root model, `handleAgentEvent` |
-| `src/internal/tui/render.go` | 195 | `renderToolCall`, `renderThinking`, `renderTodoPanel`, `renderStatusBar` |
-| `src/internal/tui/styles.go` | 105 | Lipgloss style definitions |
-| `src/internal/tui/sink.go` | ~60 | `tui.Sink` (buffered channel → Bubble Tea) |
+evo-agent is a Go-based coding agent with a Bubble Tea TUI and plain-text REPL. It drives the Anthropic Messages API in a tool-use loop, supports user-defined skills/commands, persistent memories, persistent task plans, and MCP servers.
+
+### Top-level layout
+
+```
+src/                       Go module root (module name: evo-agent)
+  main.go                  Entry: flag parsing, config, MCP init, TUI vs plain dispatch
+  internal/
+    agent/                 LLM loop, context compaction, subagent
+      loop.go              Loop() — agentic turn cycle
+      subagent.go          RunSubagent() — child agent with fresh context
+    config/                Env-var configuration (config.go)
+    skills/                Skill + slash-command registry, dispatcher
+      registry.go          Init(), InitCommands(), Catalog(), Load(), LookupForSlash()
+      dispatch.go          Dispatch(input) — slash-command pipeline
+      builtin.go           //go:embed of builtin_commands/*.md
+    tools/                 Tool registry + all built-in tools
+      tool.go              Register(), Dispatch(), Tools(), GenerateSchema[T]()
+      executor.go          Execute() — iterates content blocks, persists large output
+      bash.go read_file.go edit_file.go write_file.go
+      compact.go skill.go todo.go task.go
+      memory.go            remember + consolidate_memory tools, GlobalMemory
+      plan.go              Persistent task plan tools (.tasks/)
+      mcp.go               MCP transport (stdio / sse / streamableHttp)
+    tui/                   Bubble Tea TUI (model, render, styles, sink)
+    ui/                    Event types and output sinks
+build/                     Compiled binary output
+.evo-agent/                Per-project config root
+  command/*.md             User-defined slash commands (flat)
+  skill/<name>/SKILL.md    User-defined skills (nested)
+  memory/                  Persistent memories (per-type .md files + MEMORY.md index)
+  mcp.json                 MCP server config
+  tool-results/<id>.txt    Persisted large tool output
+.tasks/                    Persistent task plans
+  todo/<plan-name>/        Active plans (plan.md + task_N.json)
+  done/<plan-name>/        Archived plans
+Agent.md                   Optional project guidance, injected into system prompt
+```
 
 ---
 
-## Key Data Structures
+## 2. Startup Sequence (`main.go`)
 
-### LoopState (`agent/state.go`)
+```
+config.Load()                              // SystemMsg = "You are a coding agent at <cwd>."
+  ↓
+read Agent.md (if exists)                  // append "# Project Guidance (Agent.md)\n\n" + body
+  ↓
+tools.InitMCP()                            // load .evo-agent/mcp.json, spawn/connect
+  ↓
+tools.GlobalMemory.Init(projectDir)        // scan .evo-agent/memory/, parse frontmatter
+  ↓
+tools.InitPlan(projectDir)                 // mkdir .tasks/todo .tasks/done
+  ↓
+append memPrompt   = GlobalMemory.LoadPrompt()
+append            tools.MemoryGuidance     // const string about when/when-not to save
+  ↓
+skills.Init() / skills.InitCommands()      // walk .evo-agent/skill/**/SKILL.md and .evo-agent/command/*.md
+append "Skills available:\n" + skills.Catalog() + load_skill instructions
+append slash-commands intro (if SlashNames non-empty)
+  ↓
+agent.New(client, cfg, builder)            // registers subagent callback (see §6)
+  ↓
+TUI mode  → tui.Run()
+Plain mode → plain REPL
+```
+
+`cfg.SystemMsg` is **fully built and immutable** after this point. Tool results, todo reminders, and live state are added to `state.Messages` (user messages), never to system prompt.
+
+### System Prompt Sections (final order)
+
+| # | Section | Source | Conditional |
+|---|---------|--------|-------------|
+| 1 | Base identity | `config.go:41` `"You are a coding agent at {cwd}."` | always |
+| 2 | Project Guidance | `Agent.md` | only if file exists |
+| 3 | Persistent Memories | `tools.GlobalMemory.LoadPrompt()` (grouped by type: user / feedback / project / reference) | only if any memories |
+| 4 | Memory Guidance constant | `tools.MemoryGuidance` (when/when-not-to-save rules) | always |
+| 5 | Skills Catalog | `skills.Catalog()` — bullet list, excludes `disable-model-invocation: true` | only if any model-invocable skills |
+| 6 | Slash Commands intro | hard-coded explanation of `/<skill-name>` shorthand | only if `len(SlashNames) > 0` |
+
+### Subagent prompt inheritance (`agent/subagent.go:24`)
+
 ```go
-type LoopState struct {
-    Messages         []anthropic.MessageParam
-    TurnCount        int
-    CompactState     *CompactState
-    TransitionReason string // "" = end_turn, "tool_result" = more turns
+subSystem := a.cfg.SystemMsg + "\n" + systemPrompt
+```
+
+Subagents inherit the full parent prompt + a specialized task prompt. They run with `tools.ToolsExcept("task")` to prevent recursive spawning. Max 30 turns.
+
+---
+
+## 3. Agent Loop (`agent/loop.go`)
+
+```
+agent.Loop(state) {
+  for {
+    1. MicroCompact(state.Messages, KEEP_RECENT_RESULTS)   // truncate old tool-result blocks in-memory
+       autoCompact() — full LLM summarization if context > 50k chars
+
+    2. resp = client.Messages.New(System: cfg.SystemMsg, Messages: state.Messages,
+                                  Tools: tools.Tools(), MaxTokens: 8000)
+       state.Messages = append(state.Messages, resp)         // assistant turn
+
+    3. toolResults = tools.Execute(resp.Content)             // §4
+       — iterates blocks, emits ui.EvToolCall / EvToolResult
+       — Dispatch(name, input) → handler (or DispatchMCP if mcp__-prefixed)
+       — large output (>30k chars) persisted to .evo-agent/tool-results/<id>.txt
+         and replaced with 2k-char preview placeholder
+
+    4. usedTodo = (any tool_use block had Name == "todo")
+       GlobalTodo.NoteRound(usedTodo)
+       if reminder := GlobalTodo.Reminder(); reminder != "" {
+         toolResults = append(toolResults, NewTextBlock(reminder))   // 3-round nudge
+       }
+
+    5. if model called the built-in `compact` tool → CompactHistory()
+       — writes full transcript to .evo-agent/, rebuilds history as one summary message
+
+    6. if no tool_use blocks → return                         // turn complete
+       else state.Messages = append(state.Messages, NewUserMessage(toolResults...))
+  }
 }
 ```
 
-### CompactState (`agent/state.go`)
-```go
-type CompactState struct {
-    HasCompacted bool
-    LastSummary  string
-    RecentFiles  []string // FIFO, max 5
-    CompactCount int
-}
-```
+### `LoopState` & `CompactState`
 
-### TodoItem (`ui/events.go`)
-```go
-type TodoItem struct {
-    ID         string
-    Content    string
-    Status     string // "pending" | "in_progress" | "completed"
-    ActiveForm string // present-continuous label shown in TUI panel
-}
-```
+`CompactState` is carried on `LoopState` and persists for the lifetime of the REPL session (not reset between user prompts). It tracks: whether compaction has happened, the last summary, the FIFO-5 of recently-read files, total compaction count.
 
-### Event (`ui/events.go`)
-```go
-type EventKind int
-const (
-    EvThinking EventKind = iota
-    EvText
-    EvToolCall
-    EvToolResult
-    EvSystem
-    EvTokens
-    EvDone
-    EvTodo
-)
-
-type Event struct {
-    Kind         EventKind
-    Text         string
-    // EvToolCall
-    ToolID, ToolName, ToolInput string
-    // EvToolResult
-    ResultID, ResultOutput string
-    ResultError            bool
-    // EvTokens
-    Model                  string
-    InputTokens, OutputTokens int64
-    StopReason             string
-    // EvTodo
-    TodoItems []TodoItem
-}
-```
-
-### SidebarInfo (`tui/model.go`)
-```go
-type SidebarInfo struct {
-    Model, AgentName string
-    InputTokens, OutputTokens, ContextLimit int64
-    Skills, Tools, MCPServers []string
-}
-```
+Auto-compact triggers at **`CONTEXT_LIMIT` (50 000 chars)** — see [`API_REFERENCE.md` › *internal/agent — compaction*](./API_REFERENCE.md) for exact field types and `EstimateContextSize` / `MicroCompact` / `CompactHistory` signatures. Full compact writes a JSONL transcript to `.evo-agent/transcripts/<RFC3339>.jsonl`, then rebuilds `state.Messages` as a single summary user message.
 
 ---
 
-## Startup Sequence
+## 4. Tool System (`internal/tools/`)
 
+### Self-registering pattern
+
+Every tool file has an `init()` that calls `Register(ToolDef{...})`. No central registry list — packages auto-register when imported.
+
+The four core entry points:
+
+| API | Purpose |
+|-----|---------|
+| `Register(def ToolDef)` | Add a tool to the global `registry` map |
+| `Tools()` | All registered schemas + `MCPTools()`, ready for the Anthropic API |
+| `ToolsExcept(names...)` | Same as `Tools()` minus listed names — subagent uses this to strip `task` |
+| `Dispatch(name, input)` | Route by name; `mcp__`-prefix → `DispatchMCP`, else handler lookup |
+
+Exact signatures, return types, and the `Handler` / `ToolDef` definitions are in [`API_REFERENCE.md` › *internal/tools*](./API_REFERENCE.md).
+
+### Schema generation
+
+Auto-generated from Go struct tags:
+
+```go
+type TaskInput struct {
+    Prompt      string `json:"prompt" jsonschema_description:"Task description"`
+    Description string `json:"description" jsonschema_description:"UI summary"`
+}
+
+InputSchema: GenerateSchema[TaskInput]()
 ```
-main()
-  ├─ flag.Parse()                 // --plain flag
-  ├─ config.LoadEnv()             // loads .env (binary dir first, then cwd)
-  ├─ cfg := config.Load()         // MODEL_ID required, API_KEY optional
-  ├─ os.ReadFile("Agent.md")      // injects project guidance into system prompt (if exists)
-  ├─ tools.InitMCP()              // reads .evo-agent/mcp.json, connects servers
-  ├─ memory.Init() + LoadPrompt() // loads persistent memories into system prompt
-  ├─ skills.Init()                // walks .evo-agent/skill/**/SKILL.md + command/*.md + builtin embed
-  ├─ cfg.SystemMsg += Catalog()   // injects skill list into system prompt
-  ├─ client := anthropic.NewClient(opts...)
-  ├─ ag := agent.New(client, cfg) // also calls tools.RegisterSubagentRunner(ag.RunSubagent)
-  └─ if --plain:
-       ag.Run(os.Stdin)           // blocking ANSI REPL
-     else:
-       tui.Run(ag, sidebarInfo)   // sets sink, starts Bubble Tea program
-           └─ goroutine: ag.RunQuery() per user turn
+
+### Built-in tools
+
+One-line summaries — for full input schemas (`BashInput`, `ReadFileInput`, etc.) and exact behaviour (timeout values, output caps, special cases) see [`API_REFERENCE.md` › *internal/tools*](./API_REFERENCE.md).
+
+| Tool | File | Purpose |
+|------|------|---------|
+| `bash` | bash.go | Shell execution |
+| `read_file` | read_file.go | Read with line-limit; tracks `RecentFiles` for compaction |
+| `write_file` | write_file.go | Write with mkdir |
+| `edit_file` | edit_file.go | First-occurrence exact-string replacement |
+| `compact` | compact.go | Model-initiated full history summarization |
+| `load_skill` | skill.go | Load full skill body at runtime |
+| `todo` | todo.go | Session plan (max 12, exactly 1 in_progress) |
+| `task` | task.go | Spawn subagent with fresh context |
+| `remember` | memory.go | Spawn extraction subagent; reload memories after |
+| `consolidate_memory` | memory.go | Spawn consolidation subagent |
+| `plan_*` | plan.go | Persistent task management (see §7) |
+| `mcp__<server>__<tool>` | mcp.go | Routed via `DispatchMCP` |
+
+### Execute pipeline (`tools/executor.go`)
+
+```go
+func Execute(content []ContentBlockUnion) []ContentBlockParamUnion {
+    for _, block := range content {
+        case ToolUseBlock:
+            output, err := Dispatch(block.Name, block.Input)
+            output = PersistLargeOutput(block.ID, output)        // >30 KB → file
+            results = append(results,
+                NewToolResultBlock(block.ID, output, err != nil))
+    }
+    return results
+}
 ```
 
----
+### Adding a new tool
 
-## Environment Variables
-
-| Variable | Required | Default | Notes |
-|----------|----------|---------|-------|
-| `MODEL_ID` | **Yes** | — | e.g. `claude-3-5-sonnet-20241022` |
-| `ANTHROPIC_API_KEY` | No | SDK default | Overrides SDK env lookup |
-| `ANTHROPIC_BASE_URL` | No | Anthropic API | Custom proxy endpoint |
-
-`.env` files are searched: binary directory first, then current working directory. The `cwd` `.env` wins on conflict.
-
----
-
-## How to Add a New Tool
-
-### Step 1 — Create `src/internal/tools/mytool.go`
+Create `src/internal/tools/<name>.go`:
 
 ```go
 package tools
 
-import "encoding/json"
+import (
+    "encoding/json"
+    "github.com/anthropics/anthropic-sdk-go"
+)
 
-type myToolInput struct {
-    Target string `json:"target" jsonschema_description:"What to process"`
+type MyInput struct {
+    Query string `json:"query" jsonschema_description:"Search query"`
 }
 
 func init() {
     Register(ToolDef{
-        Schema: newSchema("my_tool", "One-line description.", myToolInput{}),
+        Schema: anthropic.ToolParam{
+            Name:        "my_tool",
+            Description: anthropic.String("What it does"),
+            InputSchema: GenerateSchema[MyInput](),
+        },
         Handler: func(input json.RawMessage) (string, error) {
-            var in myToolInput
+            var in MyInput
             if err := json.Unmarshal(input, &in); err != nil {
                 return "", err
             }
-            // implementation
-            return "result: " + in.Target, nil
+            return doSomething(in), nil
         },
     })
 }
 ```
 
-`newSchema` (or `GenerateSchema[T]()` depending on the helper used in the codebase) auto-generates the JSON Schema from the struct tags.
-
-### Step 2 — Rebuild
-
-```bash
-make build
-```
-
-### Step 3 — Done
-
-The tool is now listed in the system prompt and available to the model. No registration elsewhere needed.
+Auto-discovered via package init().
 
 ---
 
-## How to Add a Skill
+## 5. Skills & Slash Commands (`internal/skills/`)
 
-1. Create directory `.evo-agent/skill/my-skill/`
-2. Add `SKILL.md` with YAML frontmatter:
+Skills and commands are Markdown files with YAML frontmatter. Skills live nested under `.evo-agent/skill/<name>/SKILL.md`; commands live flat under `.evo-agent/command/<name>.md`. **Built-in commands** (e.g., `/init`) are embedded in the binary via `//go:embed builtin_commands/*.md` and loaded last by `LoadBuiltinCommands()`. User commands with the same name override built-ins.
 
-```markdown
+### File format
+
+```yaml
 ---
 name: my-skill
-description: One-sentence summary shown in the skill catalog
+description: What this skill does
+argument-hint: "[arg1] [arg2]"        # optional UI hint
+arguments: arg1, arg2                  # optional named args (space- or comma-separated)
+user-invocable: true                   # default true (false = model-only via load_skill)
+disable-model-invocation: false        # default false (true = excluded from catalog, slash-only)
 ---
 
-Full instructions for the skill go here. You can reference files
-using relative paths and include example prompts.
+Skill body. Use $arg1, $ARGUMENTS, $ARGUMENTS[0], $0, etc.
 ```
 
-3. Restart the agent. The skill appears in `skills.Catalog()` which is injected into the system prompt. The model calls `load_skill my-skill` when it needs the full body.
+### Frontmatter fields
 
----
+| Field | Required | Default | Meaning |
+|-------|----------|---------|---------|
+| `name` | yes | filename | unique id |
+| `description` | no | "No description" | shown in catalog/help |
+| `argument-hint` | no | — | UI hint string |
+| `arguments` | no | — | named args for `$name` substitution |
+| `user-invocable` | no | true | user can `/foo` |
+| `disable-model-invocation` | no | false | excluded from `Catalog()` |
 
-## Built-in Commands
+### Loading
 
-Built-in commands are embedded in the binary via `//go:embed` so they survive across clones (`.evo-agent/` is gitignored).
+- `Init()` — `filepath.WalkDir(.evo-agent/skill)` → parse → `skillDocuments` map
+- `InitCommands()` — `os.ReadDir(.evo-agent/command)` → parse → `commandDocuments` map; then `LoadBuiltinCommands()` overlays embedded
+- `Catalog()` — formatted bullet list of model-invocable skills (filters `disable-model-invocation: true`)
+- `Load(name)` — returns full skill body wrapped in XML tags (used by `load_skill` tool)
 
-### How it works
+### Dispatch pipeline (`skills/dispatch.go`)
 
-Source files live in `src/internal/skills/builtin_commands/*.md`. At compile time, Go embeds them into the binary. At runtime, `LoadBuiltinCommands()` (called at the end of `InitCommands()`) registers them into `commandDocuments`.
+```
+User: "/hello Alice"
+  ↓ Validate: starts with "/" + letter (avoid file paths like /usr/bin)
+  ↓ Parse: name="hello", rawArgs="Alice"
+  ↓ LookupForSlash("hello")          // commands first, then skills
+  ↓ Verify doc.Manifest.UserInvocable
+  ↓ ParseArgs("Alice")               // shell-style quoting
+  ↓ RenderBody(body, argNames, args, rawArgs)
+  ↓ Wrap: <skill name="hello" source="slash" type="command">…</skill>
+  ↓ Return SlashResult{Found, Prompt, Content, Name}
 
-**Priority rule**: User commands from `.evo-agent/command/` override built-in commands with the same name.
-
-### How to add a new built-in command
-
-1. Create `src/internal/skills/builtin_commands/my-command.md` with frontmatter:
-
-```markdown
----
-name: my-command
-description: What this command does
-user-invocable: true
----
-
-Instructions for the agent when /my-command is invoked.
+In agent goroutine (main.go):
+  history = append(history,
+    NewUserMessage(NewTextBlock(result.Prompt), NewTextBlock(result.Content)))
+  a.RunQueryDirect(&history, …)      // NOT RunQuery — message already built
 ```
 
-2. Rebuild: `make build`
-3. Done — the command is now available as `/my-command` in every project.
+### Argument substitution precedence (`render.go`)
 
-### Current built-in commands
+1. `$ARGUMENTS[N]` → `args[N]`
+2. `$<name>` → named arg (when `arguments:` declares them)
+3. `$N` → positional shorthand
+4. `$ARGUMENTS` → full raw string
+5. **Fallback**: if no placeholder, append `\nARGUMENTS: <rawArgs>` to body
 
-| Command | Description |
-|---------|-------------|
-| `/init` | Analyze codebase and generate Agent.md guidance file |
+### Priority rules
 
----
+- Commands take priority over skills with the same name in `LookupForSlash`
+- `Catalog()` excludes skills where `disable-model-invocation: true`
+- Default: skills are model-invocable AND user-invocable; commands are user-only (not in catalog)
 
-## Agent.md (Project Guidance)
-
-`Agent.md` is a project-level guidance file loaded into the system prompt at startup. It provides project-specific context (architecture, commands, conventions) so the agent doesn't make mistakes.
-
-### How it works
-
-At startup (`main.go`), if `Agent.md` exists in the project root:
-```go
-if agentMd, err := os.ReadFile(filepath.Join(cfg.ProjectDir, "Agent.md")); err == nil {
-    cfg.SystemMsg += "\n\n# Project Guidance (Agent.md)\n\n" + string(agentMd)
-}
-```
-
-### Generating Agent.md
-
-Run `/init` to auto-generate Agent.md by analyzing the codebase. The generated file follows a standardized template with: Project Overview, Architecture Map, Development Conventions, and Common Commands.
-
----
-
-## MCP Configuration (`.evo-agent/mcp.json`)
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-      "env": { "EXTRA_VAR": "value" },
-      "timeout": 30
-    },
-    "remote-api": {
-      "type": "streamableHttp",
-      "url": "https://api.example.com/mcp",
-      "headers": { "Authorization": "Bearer TOKEN" },
-      "timeout": 60
-    },
-    "streaming": {
-      "type": "sse",
-      "url": "https://sse.example.com/mcp",
-      "disabled": false
-    }
-  }
-}
-```
-
-Tools are automatically prefixed: `mcp__{server}__{tool}`. If the file is missing or a server fails to connect, the agent continues with remaining tools.
-
----
-
-## TUI Key Bindings
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `Ctrl+Enter` / `Alt+Enter` | Insert newline in input |
-| `Ctrl+C` / `Ctrl+D` | Quit |
-| `q` / `exit` (as sole input) | Quit |
-
----
-
-## Debugging Tips
+### Adding a skill / command
 
 ```bash
-# Run in plain mode (no TUI, direct ANSI output)
-./build/evo-agent --plain
+# Skill (in catalog, model can load_skill)
+mkdir -p .evo-agent/skill/my-skill
+cat > .evo-agent/skill/my-skill/SKILL.md <<'EOF'
+---
+name: my-skill
+description: Does X
+---
+Step 1: …
+EOF
 
-# Check tools loaded (printed at startup in plain mode or visible in status bar)
-# Status bar shows: tools:N  mcp:N
-
-# Read the full transcript of a session
-cat .evo-agent/transcripts/YYYY-MM-DD_HHmmss.txt
-
-# Inspect a persisted large tool output
-cat .evo-agent/tool-results/<tool-id>.txt
-
-# Test a specific tool invocation via the agent
->> bash echo "hello"
->> read_file src/main.go
-
-# Run tests
-cd src && go test ./...
-cd src && go test ./internal/tools/...   # one package
+# Command (slash-only, not in catalog)
+cat > .evo-agent/command/my-cmd.md <<'EOF'
+---
+name: my-cmd
+arguments: target
+---
+Do something to $target.
+EOF
 ```
 
-Common startup messages to watch:
-- `[MCP] Connected to "name" (N tools)` — MCP server OK
-- `[MCP] ... error ...` — MCP server failed (agent still runs)
-- `[Skills] Loaded N skill(s)` — skills OK
-- `[auto compact triggered: N chars]` — context was compacted
+Restart agent — auto-discovered.
 
 ---
 
-## Subagent (task tool)
+## 6. Subagent (`agent/subagent.go` + `tools/task.go`)
 
-The `task` tool lets the model spawn a child agent with a fresh, isolated context.  
-Only a text summary is returned to the parent; the child's full message history is discarded.
+### Why a callback?
 
-### How it works
-
-```
-Parent Loop                          RunSubagent(prompt)
-─────────────────────────────────    ─────────────────────────────────────────
-tool_use { name:"task",          →   messages = [NewUserMessage(prompt)]
-           prompt: "..." }           childTools = ToolsExcept("task")  // no recursion
-                                     for turn := 0; turn < 30; turn++:
-                                         LLM call (fresh context)
-                                         Execute tools (Dispatch)
-                                         if no tool_use: break
-tool_result { content: "summary" } ← return lastTextBlock
-```
-
-### Key APIs
-
-| Symbol | Package | Purpose |
-|--------|---------|---------|
-| `RegisterSubagentRunner(fn)` | `tools` | Injects the subagent runner (called by `agent.New`) |
-| `ToolsExcept(names...)` | `tools` | Returns all tool schemas minus the named ones |
-| `PersistLargeOutput(id, out)` | `tools` | Persists large outputs; called inside subagent |
-| `RunSubagent(prompt)` | `agent` | Spawns child, runs up to 30 turns, returns summary |
-
-### Import-cycle avoidance
-
-`agent` imports `tools`. To let the `task` tool (in `tools`) call `RunSubagent` (in `agent`), a private function variable is used:
+`agent` imports `tools`, so `tools/task.go` cannot import `agent`. The pattern:
 
 ```go
 // tools/task.go
-var subagentRunner func(prompt string) string
-func RegisterSubagentRunner(fn func(prompt string) string) { subagentRunner = fn }
+var subagentRunner func(systemPrompt string, messages []anthropic.MessageParam) string
 
-// agent/loop.go — called once at startup
-tools.RegisterSubagentRunner(func(prompt string) string { return a.RunSubagent(prompt) })
+func RegisterSubagentRunner(fn func(string, []anthropic.MessageParam) string) {
+    subagentRunner = fn
+}
+
+// task tool handler
+Handler: func(input json.RawMessage) (string, error) {
+    var in TaskInput
+    json.Unmarshal(input, &in)
+    if subagentRunner == nil {
+        return "Error: subagent runner not initialized", nil
+    }
+    sysPrompt := "You are a subagent. Complete the given task..."
+    msgs := []anthropic.MessageParam{
+        anthropic.NewUserMessage(anthropic.NewTextBlock(in.Prompt)),
+    }
+    return subagentRunner(sysPrompt, msgs), nil
+}
+
+// agent.New() (called from main after tools loaded)
+tools.RegisterSubagentRunner(a.RunSubagent)
 ```
 
-### Constraints
+The same pattern is used by `GlobalTodo`, `GlobalMemory`, `GlobalPlan`.
 
-- **No recursion**: `ToolsExcept("task")` strips the `task` tool from child tool list.
-- **Max 30 turns**: `subagentMaxTurns = 30` hard cap per subagent invocation.
-- **Context isolation**: child `messages` slice is local to `RunSubagent`; GC'd on return.
-- **Summary only**: parent receives the last text block produced by the child.
+### `Agent.RunSubagent`
+
+```
+subSystem = cfg.SystemMsg + "\n" + systemPrompt
+childTools = tools.ToolsExcept("task")              // strip task to prevent recursion
+
+for turn := 0; turn < 30; turn++ {
+    resp = client.Messages.New(System: subSystem, Messages: subMessages,
+                               Tools: childTools, MaxTokens: 8000)
+    capture last text block as lastText
+    dispatch tool_use blocks → toolResults
+    if no tool_use → break
+    subMessages = append(subMessages, NewUserMessage(toolResults...))
+}
+return lastText      // only the final summary returns; child history GC'd
+```
+
+### Memory subagents
+
+`memory.go` builds two specialized prompts and reuses `subagentRunner`:
+
+- `buildExtractionPrompt(memDir, existing)` — used by `remember` tool. Receives conversation history; subagent reads/writes/edits memory files. After completion, `GlobalMemory.LoadAll()` reloads.
+- `buildConsolidatePrompt(...)` — used by `consolidate_memory` tool.
 
 ---
 
-## Agent Loop Flow (Detailed)
+## 7. Persistent Task System (`tools/plan.go`)
+
+Durable, file-based task management that survives context compression and session restarts.
+
+### Layout
 
 ```
-agent.Loop(state):
-  for {
-    1. MicroCompact(state.Messages, keepRecent=3)
-       → replaces old ToolResult blocks with "[result truncated]"
-    2. if EstimateContextSize > 50000:
-         CompactHistory() → LLM summarizes → single summary message
-    3. client.Messages.New(model, system, messages, tools, maxTokens=8000)
-    4. state.Messages = append(state.Messages, resp.ToParam())
-    5. ui.PrintTokens(model, inputTok, outputTok, stopReason)
-    6. tools.Execute(resp.Content, compactState):
-         for block in resp.Content:
-           EvThinking  → ui.PrintThinking()
-           EvText      → ui.PrintText()
-           EvToolCall  → ui.PrintToolCall() → Dispatch() → result
-           EvDone      → ui.PrintDone()
-         return []ToolResultBlockParam
-    7. if no tool results: return false (done)
-    8. Todo reminder:
-         if !usedTodo for 3 rounds: append XML <reminder> to results
-    9. state.Messages = append(state.Messages, NewUserMessage(toolResults...))
-   10. if resp contains "compact" tool_use:
-         CompactHistory(focus=hint)
-  }
+.tasks/
+  todo/
+    2026-05-28-add-auth/
+      plan.md             # requirements + approach + steps
+      task_1.json
+      task_2.json
+  done/
+    2026-05-20-fix-login/
+      plan.md
+      task_*.json
 ```
+
+Plan name convention: `YYYY-MM-DD-description` (chronological + descriptive).
+
+### Task record
+
+```json
+{
+  "id": 1,
+  "subject": "Design auth schema",
+  "description": "Create migration for users table",
+  "status": "pending",
+  "blockedBy": [],
+  "blocks": [2, 3],
+  "owner": ""
+}
+```
+
+Status: `pending` | `in_progress` | `completed` | `deleted`.
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `plan_create` | Create plan dir + plan.md |
+| `plan_list` | List active + completed plans with progress |
+| `plan_task_create` | Add task; supports `blockedBy: [...]` |
+| `plan_task_update` | Change status/owner/deps |
+| `plan_task_list` | List tasks in a plan |
+| `plan_task_get` | Full details of one task |
+| `plan_complete` | Move plan from `todo/` to `done/` (requires all tasks completed/deleted) |
+
+### Dependency semantics
+
+- Setting `blockedBy: [1]` on task 2 also adds `2` to task 1's `blocks` list (bidirectional).
+- Marking task 1 `completed` removes `1` from every other task's `blockedBy`. Newly empty `blockedBy` = ready.
+- Thread-safe via `sync.RWMutex`.
+
+### Initialization
+
+`tools.InitPlan(cfg.ProjectDir)` creates `.tasks/todo/` and `.tasks/done/` if missing.
+
+### Session-scoped vs persistent
+
+| Aspect | `todo` (session) | `plan_*` (persistent) |
+|--------|------------------|------------------------|
+| Storage | in-memory `GlobalTodo` | files in `.tasks/` |
+| Lifetime | one session | survives restarts/compaction |
+| Max items | 12 | unlimited |
+| Status | adds `cancelled` | adds `deleted` |
+| Reminder | 3-round stale-check | none |
+| Sync to TUI | yes (`ui.EvTodo`) | no |
+
+---
+
+## 8. Memory System (`tools/memory.go`)
+
+### Storage
+
+```
+.evo-agent/memory/
+  MEMORY.md               # index, ≤200 lines, one line per memory: "- [name](file.md) — hint"
+  <name>.md               # individual memory with frontmatter
+```
+
+### Memory file format
+
+```yaml
+---
+name: my-memory
+description: One-line hook (≤150 chars)
+type: user | feedback | project | reference
+---
+
+Memory body content.
+```
+
+### Types
+
+| Type | When | Example |
+|------|------|---------|
+| `user` | role / preferences / knowledge | "User is Go expert, learning Rust" |
+| `feedback` | corrections + confirmations | "Always use -v flag for debugging" |
+| `project` | non-obvious project facts | "Auth rewrite driven by compliance" |
+| `reference` | external resource pointers | "OnCall dashboard: grafana.internal/d/X" |
+
+### When NOT to save
+
+- Anything derivable from code
+- Temporary task state
+- Secrets or credentials
+- Git history / recent changes
+- Debugging solutions
+
+### LoadPrompt format
+
+`GlobalMemory.LoadPrompt()` returns memories grouped by type:
+
+```
+# Memories (persistent across sessions)
+
+## user
+### name: description
+content...
+
+## feedback
+…
+```
+
+### Index constraints (`MEMORY.md`)
+
+- Max **200 lines** (soft limit; truncation warning injected via prompt at memory.go:333)
+- One line per memory, ~150 chars max
+- Index-only — never write memory **content** into MEMORY.md
+- Updated by the `remember` subagent, not the parent agent
+
+### Lifecycle
+
+1. Agent calls `remember` (or user invokes `/remember`)
+2. `subagentRunner` invoked with `buildExtractionPrompt(memDir, existing)`
+3. Subagent uses read_file/write_file/edit_file to update `.evo-agent/memory/`
+4. Parent calls `GlobalMemory.LoadAll()` → in-memory cache refreshed
+5. Memories appear in **next session's** system prompt (current prompt is immutable)
+
+---
+
+## 9. UI Event Bus (`internal/ui/`) & TUI (`internal/tui/`)
+
+### EventSink
+
+```go
+type EventSink interface {
+    Emit(Event)
+}
+
+var globalSink EventSink   // swapped at startup
+```
+
+- **TUI mode**: `tui.Sink` — buffered channel, non-blocking drop on full
+- **Plain mode**: `TerminalSink` — writes ANSI directly to stdout
+
+### `ui.Event` kinds
+
+`EvThinking`, `EvText`, `EvToolCall`, `EvToolResult`, `EvSystem`, `EvTokens`, `EvDone`, `EvTodo`.
+
+### TUI architecture
+
+`tui.Run()` creates a `Sink`, calls `ui.SetSink(sink)`, starts Bubble Tea. Two channels bridge agent goroutine and UI:
+
+```
+queryCh   chan string         // user input  (TUI → agent)
+sink.Chan() <-chan ui.Event   // agent output (agent → TUI)
+```
+
+`Model.View()` renders only the **live interactive bottom area** (pending tool calls, todo panel, spinner, input, status bar). Completed conversation content is permanently committed to the terminal scroll buffer via `tea.Println`.
+
+---
+
+## 10. MCP Integration (`tools/mcp.go`)
+
+`tools.InitMCP()` reads `.evo-agent/mcp.json` at startup. Supports three transports:
+
+| Transport | Description |
+|-----------|-------------|
+| `stdio` | Subprocess; line-delimited JSON-RPC over pipes |
+| `sse` | Persistent GET (event stream) + POST (requests); background goroutine for routing |
+| `streamableHttp` | Stateless POST per request; response auto-detected as JSON or SSE |
+
+Tool names are prefixed `mcp__{server}__{tool}`. `tools.Dispatch` routes any `mcp__`-prefixed name to `DispatchMCP`. Missing `.evo-agent/mcp.json` is silently ignored. Disabled servers (`disabled: true` in config) are skipped at startup.
+
+For the exact `MCPServerConfig` / `MCPConfig` JSON schema, the `mcpClient` interface, and `MCPTools()` / `DispatchMCP()` signatures see [`API_REFERENCE.md` › *internal/tools — MCP*](./API_REFERENCE.md).
+
+---
+
+## 11. Configuration (`internal/config/config.go`)
+
+`Config` carries `ModelID` (required), `APIKey`, `BaseURL`, and the dynamically-built `SystemMsg`. `config.LoadEnv()` reads `.env` files in two passes: first from the binary directory (e.g. `build/.env`), then from the cwd (overrides the first). `config.Load()` then reads env vars and returns a populated `*Config` — see [`API_REFERENCE.md` › *internal/config*](./API_REFERENCE.md) for the field table.
+
+---
+
+## 11.5 Session Persistence (`internal/session/`)
+
+Append-only JSONL transcripts under `.evo-agent/sessions/{ts}-{UUID}/` survive process exit and power `/resume`. Full design in [`session-persistence.md`](./session-persistence.md).
+
+Key points:
+
+- **Per-session directory**: `.evo-agent/sessions/<unix_ms>_<8 hex>/` (e.g. `1780227556183_b525857d`) holding `messages.jsonl` (event stream), `meta.json` (cumulative tokens + first prompt for the picker), `subagent/<unix_ms>_<name>_<8 hex>.jsonl` (sidechain transcripts). Lexical order = chronological order; `_` separates the numeric ms prefix from the UUID suffix.
+- **Record envelope**: every JSONL line carries `type`, `timestamp` (ISO-8601 local wall-clock with numeric offset, ms precision, e.g. `"2026-05-31T19:58:42.705+08:00"`), `agent_version`, `session_id`, `cwd`, `prompt_id`, `git_branch`, plus type-specific fields.
+- **Record types**: `session_start`, `user`, `assistant`, `compact_boundary`, `resume_marker`, `subagent_start`, `subagent_end` — same envelope (timestamp, agent_version, session_id, cwd, prompt_id, git_branch), type-specific fields.
+- **Recovery rule**: `LoadForResume` finds the **last** `compact_boundary`, drops every user/assistant record before it, prepends a synthetic user message wrapping the boundary's `summary` in `<previous-conversation-summary>` tags, and surfaces each post-boundary `subagent_end.result` as a `<subagent-result>` user block.
+- **Entry points**: `evo-agent --resume <id>` (CLI), `/resume` (TUI dropdown picker, sorted newest first with token totals + first prompt), `/resume <id>` (inline, intercepted client-side). Exit always prints `Resume this session with: evo-agent --resume <id>`.
+- **Hooks**: `agent.LoopState.{Recorder,PromptID}` carry the recorder per turn; `agent.CompactHistory(... recorder, promptID)` writes the boundary; `tools.RegisterNamedSubagentRunner` lets the task tool's `description` label subagent files.
+
+---
+
+## 12. Constants & Limits
+
+| Value | Identifier | Where | Meaning |
+|-------|------------|-------|---------|
+| `50000` | `CONTEXT_LIMIT` | agent/loop.go | Auto-compact trigger (estimated chars) |
+| `3` | `KEEP_RECENT_RESULTS` | agent/loop.go | Tool results kept intact by `MicroCompact` |
+| `80000` | `maxConversationBytes` | agent/loop.go | Max bytes passed to summarisation LLM |
+| `30` | `subagentMaxTurns` | agent/subagent.go | Subagent hard turn cap |
+| `8000` | (literal) | loop.go, subagent.go | `MaxTokens` per LLM call |
+| `30000` | `persistThreshold` | tools/executor.go | Large-output threshold → `.evo-agent/tool-results/<id>.txt` |
+| `2000` | (literal) | tools/executor.go | Preview-placeholder length for persisted output |
+| `12` | (literal) | tools/todo.go | Max session-todo items |
+| `3` | (literal) | tools/todo.go | Rounds without `todo` tool use → reminder injection |
+| `200` | `maxIndexLines` | tools/memory.go | MEMORY.md soft line cap |
+| `150` | (soft) | tools/memory.go | Per-line cap for MEMORY.md entries |
+| `120 s` | (literal) | tools/bash.go | Bash timeout |
+| `50 000` chars | (literal) | tools/bash.go, read_file.go | Bash + read_file output cap |
+| `200000` | (literal) | — | Claude API context window (informational) |
+
+---
+
+## 13. File Map (line-number index)
+
+| Component | File | Lines | Notes |
+|-----------|------|-------|-------|
+| Config struct + base prompt | `internal/config/config.go` | 12-18, 41 | `SystemMsg` field; "You are a coding agent at …" |
+| Main initialization | `main.go` | 45-86 | Sequential injection into `cfg.SystemMsg` |
+| Slash-command dispatch in TUI | `main.go` | 114-144 | Two-block message → `RunQueryDirect` |
+| Agent loop | `internal/agent/loop.go` | 88-165 | `Loop()`; system prompt at line 101 |
+| Tool result reminder injection | `internal/agent/loop.go` | 143-156 | Todo reminder as user text block |
+| Subagent | `internal/agent/subagent.go` | 19-83 | Combined prompt at line 24 |
+| Memory loading | `internal/tools/memory.go` | 55-242 | `Init()`, `LoadAll()`, `LoadPrompt()` |
+| Memory extraction prompt | `internal/tools/memory.go` | 246-346 | `buildExtractionPrompt` |
+| Memory consolidation prompt | `internal/tools/memory.go` | 350-376 | `buildConsolidatePrompt` |
+| Memory guidance const | `internal/tools/memory.go` | 24-42 | `MemoryGuidance` |
+| Skills loading | `internal/skills/registry.go` | 39-99, 104-129 | `Init()`, `Catalog()` |
+| Slash dispatcher | `internal/skills/dispatch.go` | 18-88 | `Dispatch(input)` → `SlashResult` |
+| Tool registry | `internal/tools/tool.go` | 11-50 | `Register`, `Tools`, `Dispatch`, `ToolsExcept`, `GenerateSchema[T]` |
+| Tool executor | `internal/tools/executor.go` | — | `Execute()`, large-output persistence |
+
+---
+
+## 14. Common Tasks Cheat Sheet
+
+### Add a tool
+→ §4 "Adding a new tool". Drop a file in `src/internal/tools/`, restart.
+
+### Add a skill
+→ §5 "Adding a skill / command". Drop SKILL.md in `.evo-agent/skill/<name>/`.
+
+### Add a slash command
+→ §5. Drop `.md` in `.evo-agent/command/`.
+
+### Add a builtin command (shipped in binary)
+→ Drop `.md` in `internal/skills/builtin_commands/`. Loaded via `//go:embed`. User overrides take priority.
+
+### Modify the system prompt
+→ Edit `main.go:45-86`. Keep order in §2 in mind. To add a new dynamic section, follow the pattern `cfg.SystemMsg += "\n\n# …\n" + body`.
+
+### Add a new persistent task
+→ Use `plan_create` then `plan_task_create`. Manual: `.tasks/todo/<plan>/task_N.json`.
+
+### Make a memory persist
+→ Call `remember` tool (or user invokes `/remember`) — extraction subagent writes to `.evo-agent/memory/`. Re-load happens automatically; visible in **next** session's system prompt.
+
+### Add an MCP server
+→ Edit `.evo-agent/mcp.json`. Schema in [`API_REFERENCE.md` › *internal/tools — MCP*](./API_REFERENCE.md). Three transports: `stdio` (Command/Args/Env), `sse`/`streamableHttp` (URL/Headers).
+
+---
+
+## 15. Debugging Tips
+
+- **System prompt content**: print `cfg.SystemMsg` after `main.go:86` and inspect.
+- **Skill not in catalog**: check `disable-model-invocation` in frontmatter; check `Init()` logs for parse errors.
+- **Tool not dispatched**: confirm `init()` ran (package must be imported transitively); search for `Register(ToolDef{Name: "<name>"`).
+- **Subagent never spawns**: ensure `agent.New()` runs after the tools package is loaded — `RegisterSubagentRunner` must be called before any `task`/`remember` invocation.
+- **Memory write didn't appear**: memories are visible only in the **next** session's prompt. Inspect `.evo-agent/memory/MEMORY.md` and individual files to confirm subagent wrote them.
+- **MEMORY.md > 200 lines**: triggers truncation warning in extraction prompt; consolidation needed.
+- **Tool output truncated**: check `.evo-agent/tool-results/<tool_use_id>.txt` for full content (large-output persistence).
+- **Auto-compact not triggering**: `EstimateContextSize` is a char-count heuristic; threshold is 50 000.
+
+---
+
+## 16. Related Files
+
+| File | Role | When to read |
+|------|------|--------------|
+| `CLAUDE.md` (project root) | Claude Code-specific guidance | Working in Claude Code |
+| `Agent.md` (project root, optional) | Injected into system prompt §2 | Editing project guidance |
+| [`API_REFERENCE.md`](./API_REFERENCE.md) | Exact Go signatures, struct field tables, tool input schemas, ANSI color constants | Implementing or calling an API; verifying a constant value |
+| [`anthropic-sdk-go.md`](./anthropic-sdk-go.md) | Vendored Anthropic SDK reference | SDK call details |
+| [`skills.md`](./skills.md) | External skills format spec | Authoring skills |

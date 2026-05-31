@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 
+	"evo-agent/internal/session"
 	"evo-agent/internal/skills"
 	"evo-agent/internal/ui"
 )
@@ -59,6 +60,11 @@ type Model struct {
 	completionItems  []string // filtered list of matching names
 	completionIdx    int      // currently highlighted index (0-based)
 	allSlashNames    []string // full list: skills + commands
+
+	// Session picker (triggered by typing exactly "/resume")
+	sessionPickerActive bool
+	sessionPickerItems  []session.SessionListEntry
+	sessionPickerIdx    int
 }
 
 // NewModel creates the initial TUI model.
@@ -154,6 +160,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "escape":
+		if m.sessionPickerActive {
+			m.sessionPickerActive = false
+			return m, nil
+		}
 		if m.completionActive {
 			m.completionActive = false
 			return m, nil
@@ -161,6 +171,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up":
+		if m.sessionPickerActive && len(m.sessionPickerItems) > 0 {
+			m.sessionPickerIdx--
+			if m.sessionPickerIdx < 0 {
+				m.sessionPickerIdx = len(m.sessionPickerItems) - 1
+			}
+			return m, nil
+		}
 		if m.completionActive && len(m.completionItems) > 0 {
 			m.completionIdx--
 			if m.completionIdx < 0 {
@@ -176,6 +193,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "down":
+		if m.sessionPickerActive && len(m.sessionPickerItems) > 0 {
+			m.sessionPickerIdx++
+			if m.sessionPickerIdx >= len(m.sessionPickerItems) {
+				m.sessionPickerIdx = 0
+			}
+			return m, nil
+		}
 		if m.completionActive && len(m.completionItems) > 0 {
 			m.completionIdx++
 			if m.completionIdx >= len(m.completionItems) {
@@ -209,6 +233,30 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			return m, nil
 		}
+		// Session picker active: accept selection (if any) and auto-submit.
+		// If picker is open but empty, just close it — don't fall through and
+		// submit the literal "/resume" command.
+		if m.sessionPickerActive {
+			if len(m.sessionPickerItems) == 0 {
+				m.sessionPickerActive = false
+				m.textarea.Reset()
+				return m, nil
+			}
+			id := m.sessionPickerItems[m.sessionPickerIdx].ID
+			m.sessionPickerActive = false
+			m.completionActive = false
+			m.textarea.Reset()
+			m.busy = true
+			m.queryStartTime = time.Now()
+			query := "/resume " + id
+			w := m.width
+			if w == 0 {
+				w = 80
+			}
+			printed := userStyle.Width(w - 2).Render("You: " + query)
+			go func() { m.queryCh <- query }()
+			return m, tea.Batch(tea.Println(printed+"\n"), tickCmd())
+		}
 		// If completion active, accept selection
 		if m.completionActive && len(m.completionItems) > 0 {
 			selected := m.completionItems[m.completionIdx]
@@ -227,6 +275,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.textarea.Reset()
 		m.busy = true
 		m.completionActive = false
+		m.sessionPickerActive = false
 		m.queryStartTime = time.Now()
 		// Print user message permanently into scroll buffer
 		w := m.width
@@ -358,6 +407,11 @@ func (m *Model) View() tea.View {
 		parts = append(parts, panel)
 	}
 
+	// Show session picker when /resume is typed alone
+	if panel := m.renderSessionPicker(w); panel != "" {
+		parts = append(parts, panel)
+	}
+
 	if m.busy {
 		parts = append(parts, inputBusyStyle.Render(spinnerFrame()+" Thinking…"))
 	}
@@ -409,7 +463,21 @@ func (m *Model) updateCompletion() {
 	// Must start with "/" and not be busy
 	if m.busy || len(val) == 0 || val[0] != '/' {
 		m.completionActive = false
+		m.sessionPickerActive = false
 		return
+	}
+
+	// Special case: typing exactly "/resume" (no args) opens the session picker.
+	trimmed := strings.TrimRight(val, " ")
+	if trimmed == "/resume" {
+		m.completionActive = false
+		m.openSessionPicker()
+		return
+	}
+	// Once the user starts typing args after /resume, dismiss the picker —
+	// they're entering an explicit id.
+	if strings.HasPrefix(val, "/resume ") {
+		m.sessionPickerActive = false
 	}
 
 	// Extract the prefix after "/" (up to first space)
@@ -440,6 +508,28 @@ func (m *Model) updateCompletion() {
 	if m.completionIdx >= len(filtered) {
 		m.completionIdx = 0
 	}
+}
+
+// openSessionPicker loads the session list and activates the picker dropdown.
+// Sessions are read from .evo-agent/sessions/ in m.info.ProjectDir, sorted
+// newest first. The currently active session is filtered out so the user
+// can't try to resume the in-progress conversation.
+//
+// The picker is activated even when the filtered list is empty so the user
+// always sees feedback when they type "/resume" — render handles the empty
+// state with a helpful hint instead of an actionable list.
+func (m *Model) openSessionPicker() {
+	all := session.ListSessions(m.info.ProjectDir)
+	filtered := all[:0]
+	for _, e := range all {
+		if e.ID == m.info.SessionID {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+	m.sessionPickerItems = filtered
+	m.sessionPickerActive = true
+	m.sessionPickerIdx = 0
 }
 
 // renderCompletion renders the autocomplete dropdown panel.
@@ -501,4 +591,109 @@ func spinnerFrame() string {
 	f := spinnerFrames[spinnerIdx%len(spinnerFrames)]
 	spinnerIdx++
 	return f
+}
+
+// ── Session picker ────────────────────────────────────────────────────────────
+
+// renderSessionPicker renders the resume session list when active.
+//
+// Each row shows: time | tokens | first prompt — sorted newest first by the
+// list provider. Up/Down navigate; Enter accepts and submits "/resume <id>".
+// When the list is empty, a single non-selectable hint line is rendered so
+// the user gets feedback that the dropdown opened but has no candidates.
+func (m *Model) renderSessionPicker(w int) string {
+	if !m.sessionPickerActive {
+		return ""
+	}
+
+	innerW := w - 4
+	if innerW < 40 {
+		innerW = 40
+	}
+
+	header := completionItemStyle.Width(innerW).Render(
+		"  Pick a session to resume  (↑/↓ select, Enter accept, Esc cancel)",
+	)
+	var lines []string
+	lines = append(lines, header)
+
+	if len(m.sessionPickerItems) == 0 {
+		hint := completionItemStyle.Width(innerW).Render(
+			"  (no previous sessions in this project — start chatting, then come back)",
+		)
+		lines = append(lines, hint)
+		inner := strings.Join(lines, "\n")
+		return completionBorderStyle.Width(w - 2).Render(inner)
+	}
+
+	const maxShow = 8
+	items := m.sessionPickerItems
+	if len(items) > maxShow {
+		items = items[:maxShow]
+	}
+
+	for i, e := range items {
+		updated := e.Updated
+		if updated == 0 {
+			updated = session.ParseLeadingTimestampMs(e.ID)
+		}
+		ts := time.UnixMilli(updated).Local().Format("2006-01-02 15:04")
+		prompt := e.FirstPrompt
+		if prompt == "" {
+			prompt = "(no prompt yet)"
+		}
+		// Build line: TIME  tokens=N,NNN  「prompt…」
+		head := fmt.Sprintf("  %s  tokens=%s  ", ts, formatThousands(e.TotalTokens()))
+		maxPromptW := innerW - len(head) - 4
+		if maxPromptW < 8 {
+			maxPromptW = 8
+		}
+		if len(prompt) > maxPromptW {
+			prompt = prompt[:maxPromptW-1] + "…"
+		}
+		line := head + "「" + prompt + "」"
+		if i == m.sessionPickerIdx {
+			line = completionSelectedStyle.Width(innerW).Render(line)
+		} else {
+			line = completionItemStyle.Width(innerW).Render(line)
+		}
+		lines = append(lines, line)
+	}
+
+	if len(m.sessionPickerItems) > maxShow {
+		more := fmt.Sprintf("  … %d more", len(m.sessionPickerItems)-maxShow)
+		lines = append(lines, completionItemStyle.Render(more))
+	}
+
+	inner := strings.Join(lines, "\n")
+	return completionBorderStyle.Width(w - 2).Render(inner)
+}
+
+// parseLeadingUnix is kept as a thin alias of session.ParseLeadingTimestampMs
+// for any code that already imports it; new code should call the session
+// package directly.
+//
+// Removed — see session.ParseLeadingTimestampMs.
+
+// formatThousands formats an int64 with comma separators.
+func formatThousands(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	rem := len(s) % 3
+	if rem > 0 {
+		b.WriteString(s[:rem])
+		if len(s) > rem {
+			b.WriteByte(',')
+		}
+	}
+	for i := rem; i < len(s); i += 3 {
+		b.WriteString(s[i : i+3])
+		if i+3 < len(s) {
+			b.WriteByte(',')
+		}
+	}
+	return b.String()
 }

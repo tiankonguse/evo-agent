@@ -11,6 +11,7 @@ type SidebarInfo struct {
 	ProjectDir   string
 	Model        string
 	Provider     string
+	SessionID    string // active session id (for status + /resume hint)
 	InputTokens  int64
 	OutputTokens int64
 	ContextLimit int64

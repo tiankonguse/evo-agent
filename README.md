@@ -20,6 +20,7 @@ Evo-Agent is a lightweight, tool-augmented AI agent written in Go. It leverages 
 - **Persistent Session Plan (plan_\*)**: Two-layer planning — the in-memory `todo` is for short steps, while the disk-backed `plan_*` tool family stores big tasks as a directory of JSON files under `.evo-agent/tasks/todo/<YYYY-MM-DD-name>/`; survives context compaction and process restarts; supports a task dependency graph (`blockedBy` / `blocks`, bidirectionally synced); active plan summary auto-injected into the system prompt; 5-round stale-reminder; on startup the active plans are printed and re-injected so the agent picks up exactly where it left off
 - **Subagent (task tool)**: `task` tool spawns an isolated child agent with a fresh context to delegate complex subtasks; child shares the filesystem but not conversation history; only a text summary is returned to the parent; recursive spawning is prevented by stripping `task` from child's tool list; hard cap of 30 turns per subagent
 - **Dump Prompts Debugging**: `/dump-prompts` toggle saves every API call (system prompt + messages) to `.evo-agent/dump-prompts/` as JSONL for prompt inspection and debugging
+- **Session Persistence (`/resume`)**: Append-only transcript layer under `.evo-agent/sessions/<unix_ms>_<UUID>/` (`messages.jsonl` + `meta.json` sidecar + per-subagent sidechain files); every user turn, assistant response, tool result, and compact boundary is durably recorded as a single JSONL line; resume via `evo-agent --resume <id>` (CLI), `/resume <id>` (inline), or `/resume` (TUI dropdown picker showing date / token count / first prompt); on resume the loader replays post-boundary messages and prepends the most recent compact summary wrapped in `<previous-conversation-summary>` so the model sees a digest instead of a literal history; subagent conclusions surface as `<subagent-result name="…">…</subagent-result>` notes; on exit the agent prints the resume hint so the next session can pick up exactly where it left off
 
 ## Project Structure
 
@@ -40,6 +41,16 @@ src/
     ├── prompt/
     │   ├── builder.go         # Builder: section-based system prompt assembly with static/dynamic boundary
     │   └── builder_test.go    # Unit tests for prompt builder sections and ordering
+    ├── session/
+    │   ├── session.go         # Session struct, NewSession, AdoptSession (writes session_start)
+    │   ├── recorder.go        # Recorder: append-only writes + meta.json sidecar
+    │   ├── subagent_recorder.go # Sidechain recorder for subagent transcripts
+    │   ├── loader.go          # LoadForResume: rebuild a runnable message slice
+    │   ├── list.go            # ListSessions for the /resume picker
+    │   ├── record.go          # Record envelope + Type* constants
+    │   ├── ids.go             # NewSessionID, NewPromptID, NewSubagentFilename, slugify
+    │   ├── git.go             # currentGitBranch — best-effort `git rev-parse --abbrev-ref HEAD`
+    │   └── session_test.go    # Round-trip, compact-clip, sidechain, resume_marker tests
     ├── skills/
     │   ├── registry.go        # SkillManifest, Init, InitCommands, Catalog, Load, LookupForSlash
     │   ├── dispatch.go        # Dispatch, SlashResult, SlashNames — slash command entry point
@@ -106,6 +117,10 @@ make test
 
 # Plain-text mode (no TUI)
 ./build/evo-agent --plain 
+
+# Resume a previous session
+./build/evo-agent --resume <session-id>
+./build/evo-agent --plain --resume <session-id>
 ```
 
 ## Usage
@@ -323,6 +338,67 @@ Usage examples:
 
 That's it — the tool is automatically available to the agent on next run.
 
+## Session Persistence
+
+Every run is durably recorded as an append-only JSONL transcript so a session
+can be resumed across process restarts. See [`docs/session-persistence.md`](docs/session-persistence.md)
+for the full design.
+
+### On-disk layout
+
+```
+.evo-agent/sessions/<unix_ms>_<UUID>/
+├── messages.jsonl                       # append-only event stream (user / assistant / tool result / compact_boundary / resume_marker / subagent_start | _end / session_start)
+├── meta.json                            # sidecar: cumulative tokens, first prompt, branch, ts (rewritten after every append; cheap to list for the picker)
+└── subagent/
+    └── <unix_ms>_<name>_<UUID>.jsonl    # per-subagent sidechain transcript
+```
+
+The session id is `<unix_ms>_<8 hex>` (e.g. `1780227556183_b525857d`) so
+`os.ReadDir` returns sessions in time order without an explicit sort.
+
+### Write points in the agent loop
+
+| Hook | Record type |
+|---|---|
+| `agent.RunQuery` / `RunQueryDirect` / `Run` (user turn entry) | `user` |
+| `agent.Loop` after assistant response | `assistant` (with `input_tokens` / `output_tokens`) |
+| `agent.Loop` after tool results | `user` (tool results travel as user role) |
+| `agent.CompactHistory` after summary generation | `compact_boundary` |
+| `task` tool spawn / return | `subagent_start` / `subagent_end` (parent) + full per-message records (sidechain) |
+
+A `nil` recorder transparently disables persistence.
+
+### Resume entry points
+
+| Form | Where |
+|---|---|
+| `evo-agent --resume <id>` | CLI flag (TUI or `--plain`) |
+| `/resume <id>` | Inline in the input box — intercepted client-side, never reaches the LLM |
+| `/resume` (no args) | TUI dropdown picker; rows show `YYYY-MM-DD HH:MM   tokens=…   「first prompt…」` — ↑/↓ to select, Enter to submit, Esc to cancel |
+
+`--resume` always opens a **new** session file and writes a `resume_marker`
+record referencing the source id. The original transcript is never modified.
+
+### Recovery rules
+
+`session.LoadForResume` rebuilds a runnable `[]anthropic.MessageParam` slice:
+
+1. Stream-scan `messages.jsonl`, collecting every record.
+2. Find the index of the **last** `compact_boundary`, remembering its summary.
+3. Drop every `user` / `assistant` record at indexes ≤ that boundary.
+4. If a boundary existed, prepend a synthetic user message wrapping the summary in `<previous-conversation-summary>` tags.
+5. Replay every post-boundary `user` / `assistant` `Message` field.
+6. For every `subagent_end` after the boundary, append `<subagent-result name="…">…</subagent-result>` so the parent context still remembers the subagent's conclusion.
+
+### Exit hint
+
+When the process exits, a deferred print surfaces:
+
+```
+Resume this session with: evo-agent --resume <session-id>
+```
+
 ## Blog
 
 | Article | Description |
@@ -346,6 +422,7 @@ That's it — the tool is automatically available to the agent on next run.
 
 | Version | Description |
 |---------|-------------|
+| **v0.15.0** | Add session persistence: new `internal/session` package writes an append-only `.evo-agent/sessions/<unix_ms>_<UUID>/messages.jsonl` transcript with a `meta.json` sidecar (cumulative tokens, first prompt, branch, ts) and per-subagent sidechain files under `subagent/`; `Recorder` hooks four points in the agent loop (user turn entry, assistant response, tool results, `compact_boundary`) plus subagent start/end markers; `LoadForResume` rebuilds a runnable `[]anthropic.MessageParam` slice — drops pre-boundary turns, prepends the most recent compact summary wrapped in `<previous-conversation-summary>` tags, and surfaces `<subagent-result>` notes for any post-boundary subagent conclusion; three resume entry points: `evo-agent --resume <id>` (CLI), `/resume <id>` (inline, client-side intercept that never reaches the LLM), and `/resume` (TUI dropdown picker showing date / token count / first prompt with ↑/↓ select); `agent.LoopState` carries `Recorder` + `PromptID` so a `nil` recorder transparently disables persistence; on resume a `resume_marker` is written to a fresh session file and the source transcript is never mutated; exit hint `Resume this session with: evo-agent --resume <id>` printed on process termination |
 | **v0.14.0** | Add persistent session plan: `internal/tools/plan.go` introduces a disk-backed task graph at `.evo-agent/tasks/todo/<YYYY-MM-DD-name>/` (each plan = directory of `plan.md` + `task_N.json`); 7 new tools (`plan_create`, `plan_list`, `plan_task_create`, `plan_task_update`, `plan_task_list`, `plan_task_get`, `plan_complete`); two-layer planning model (in-memory `todo` for short steps, on-disk `plan_*` for big tasks); bidirectional dependency graph (`blockedBy` / `blocks`) with auto-sync on task creation/update and auto-clear on completion; single-active-plan invariant prevents concurrent in-progress plans; 5-round stale reminder when an active plan goes idle; `LoadPrompt()` injects active plan summary into the system prompt's `# Active Plans` section; `StartupSummary()` prints the active plan tree on launch; finished plans are archived from `todo/` to `done/` via `plan_complete`; survives context compaction and process restarts |
 | **v0.13.0** | Add system prompt builder: `internal/prompt` package with `Builder` struct assembles prompt from independent sections; static/dynamic boundary (`DynamicBoundary`) separates cacheable content from per-session context; `MemoryProvider` and `SkillsProvider` interfaces for dependency injection; environment section injects runtime context (git, platform, shell, model, date); `/dump-prompts` toggle saves API calls to `.evo-agent/dump-prompts/*.jsonl` for debugging; `skills.Provider` adapter satisfies prompt interfaces |
 | **v0.12.0** | Add `/init` built-in command and Agent.md loading: `/init` analyzes codebase structure and generates `Agent.md` project guidance file; `Agent.md` is read at startup and injected into system prompt; built-in commands embedded via `//go:embed` survive across clones; user commands in `.evo-agent/command/` override built-ins with the same name |
