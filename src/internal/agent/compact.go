@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"evo-agent/internal/llm"
 	"evo-agent/internal/session"
 	"evo-agent/internal/ui"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -94,7 +95,11 @@ func MicroCompact(messages []anthropic.MessageParam, keepCount int) []anthropic.
 }
 
 // SummarizeHistory calls the LLM to generate a conversation summary.
-func SummarizeHistory(client *anthropic.Client, model string, messages []anthropic.MessageParam) (string, error) {
+//
+// Provider-agnostic: the supplied llm.Provider may be the Anthropic
+// adapter or the OpenAI adapter. The MessageNewParams shape stays
+// canonical across both backends.
+func SummarizeHistory(provider llm.Provider, model string, messages []anthropic.MessageParam) (string, error) {
 	// Truncate conversation if too large
 	data, _ := json.Marshal(messages)
 	conversation := string(data)
@@ -116,7 +121,7 @@ Be compact but concrete.
 	ui.PrintSystem("DEBUG: Generating summary...")
 	start := time.Now()
 
-	resp, err := client.Messages.New(context.Background(), anthropic.MessageNewParams{
+	resp, err := provider.SendMessage(context.Background(), anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
 		Messages:  []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(prompt))},
 		MaxTokens: 2000,
@@ -151,7 +156,7 @@ Be compact but concrete.
 // boundary to drop everything older than the most recent compaction while
 // still surfacing the summary to the model.
 func CompactHistory(
-	client *anthropic.Client,
+	provider llm.Provider,
 	model string,
 	messages []anthropic.MessageParam,
 	state *CompactState,
@@ -165,7 +170,7 @@ func CompactHistory(
 	}
 
 	// Generate summary
-	summary, err := SummarizeHistory(client, model, messages)
+	summary, err := SummarizeHistory(provider, model, messages)
 	if err != nil {
 		ui.PrintSystem(fmt.Sprintf("ERROR: Summarization failed: %v", err))
 		return messages, err

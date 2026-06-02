@@ -11,6 +11,13 @@ const (
 	TypeResumeMarker    = "resume_marker"
 	TypeSubagentStart   = "subagent_start"
 	TypeSubagentEnd     = "subagent_end"
+
+	// Goal lifecycle markers (used by the /goal command and the loop's
+	// goal-driven continuation logic). They survive compact_boundary so a
+	// goal set before a compaction is still restorable on --resume.
+	TypeGoalSet      = "goal_set"
+	TypeGoalCleared  = "goal_cleared"
+	TypeGoalAchieved = "goal_achieved"
 )
 
 // Record is a single append-only event in a session transcript.
@@ -50,4 +57,9 @@ type Record struct {
 	AgentName    string `json:"agent_name,omitempty"`
 	SubagentPath string `json:"subagent_path,omitempty"` // relative to session dir
 	Result       string `json:"result,omitempty"`        // subagent_end final text
+
+	// type=goal_set | goal_cleared | goal_achieved
+	GoalText     string `json:"goal_text,omitempty"`      // full condition (goal_set)
+	GoalReason   string `json:"goal_reason,omitempty"`    // evaluator reason (goal_achieved)
+	GoalPlanName string `json:"goal_plan_name,omitempty"` // associated .evo-agent/tasks/todo/<name>
 }

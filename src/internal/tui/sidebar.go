@@ -10,7 +10,8 @@ type SidebarInfo struct {
 	Version      string
 	ProjectDir   string
 	Model        string
-	Provider     string
+	Provider     string // freeform label (BaseURL or backend name); shown in sidebar
+	ProviderID   string // canonical protocol id ("anthropic" | "openai"); shown in status bar
 	SessionID    string // active session id (for status + /resume hint)
 	InputTokens  int64
 	OutputTokens int64
@@ -20,6 +21,8 @@ type SidebarInfo struct {
 	Commands   []string // command names (from .evo-agent/command/)
 	Tools      []string
 	MCPServers []string // MCP server names only
+
+	Goal string // active /goal condition (truncated by sidebar renderer); "" when no goal
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

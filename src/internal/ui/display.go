@@ -66,6 +66,38 @@ func (TerminalSink) Emit(e Event) {
 			}
 			fmt.Printf("%s  %s %s%s\n", ColorMagenta, marker, line, ColorReset)
 		}
+	case EvGoal:
+		// Plain mode: one line per lifecycle event so the user can see what
+		// the loop's goal logic decided. The TUI renders a richer indicator
+		// in the live bottom area instead.
+		switch e.GoalKind {
+		case "set":
+			fmt.Printf("%s◎ /goal set: %s%s\n", ColorYellow, e.GoalText, ColorReset)
+			if e.GoalPlanName != "" {
+				fmt.Printf("%s  associated plan: .evo-agent/tasks/todo/%s/%s\n", ColorYellow, e.GoalPlanName, ColorReset)
+			}
+		case "evaluating":
+			fmt.Printf("%s◎ /goal evaluating (iter %d/%d)…%s\n", ColorYellow, e.GoalIter, e.GoalMaxIter, ColorReset)
+		case "continuing":
+			fmt.Printf("%s◎ /goal not yet met — continuing (iter %d/%d). reason: %s%s\n",
+				ColorYellow, e.GoalIter, e.GoalMaxIter, e.GoalReason, ColorReset)
+		case "achieved":
+			fmt.Printf("%s✓ /goal achieved: %s%s\n", ColorGreen, e.GoalReason, ColorReset)
+		case "cleared":
+			fmt.Printf("%s◎ /goal cleared%s\n", ColorYellow, ColorReset)
+		case "capped":
+			fmt.Printf("%s× /goal capped at %d iterations — auto-cleared%s\n", ColorRed, e.GoalMaxIter, ColorReset)
+		case "status":
+			if e.GoalText == "" {
+				fmt.Printf("%s◎ /goal: no active goal%s\n", ColorYellow, ColorReset)
+			} else {
+				fmt.Printf("%s◎ /goal active: %s (iter %d/%d)%s\n",
+					ColorYellow, e.GoalText, e.GoalIter, e.GoalMaxIter, ColorReset)
+				if e.GoalPlanName != "" {
+					fmt.Printf("%s  plan: .evo-agent/tasks/todo/%s/%s\n", ColorYellow, e.GoalPlanName, ColorReset)
+				}
+			}
+		}
 	}
 }
 

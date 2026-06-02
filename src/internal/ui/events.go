@@ -13,6 +13,7 @@ const (
 	EvDone                       // Agent finished a turn
 	EvTodo                       // Session plan updated
 	EvPlan                       // Persistent plan updated
+	EvGoal                       // Active goal status changed (set/cleared/achieved/evaluating/continuing/capped)
 )
 
 // TodoItem is one entry in the memory plan.
@@ -67,4 +68,14 @@ type Event struct {
 
 	// EvPlan
 	PlanItems []PlanSnapshot
+
+	// EvGoal — populated by the /goal slash handler and the agent loop's
+	// goal-driven continuation logic.
+	GoalKind     string // "set"|"cleared"|"achieved"|"evaluating"|"continuing"|"capped"|"status"
+	GoalText     string // active goal condition (set/status/continuing)
+	GoalReason   string // evaluator reason (continuing/achieved)
+	GoalPlanName string // associated .evo-agent/tasks/todo/<name>
+	GoalIter     int    // continuation count consumed (0-based)
+	GoalMaxIter  int    // cap (e.g. 30)
+	GoalSetAt    int64  // Unix ms when the goal was set; used for elapsed display
 }

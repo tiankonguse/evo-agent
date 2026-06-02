@@ -146,6 +146,44 @@ func (r *Recorder) AppendSubagentEnd(promptID, agentName, subagentPath, result s
 	}
 }
 
+// AppendGoalSet records that the user activated a /goal. The full condition
+// text and the associated persistent plan name (.evo-agent/tasks/todo/<name>) are
+// stored so --resume can rehydrate the goal verbatim.
+func (r *Recorder) AppendGoalSet(promptID, text, planName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.baseRecord(TypeGoalSet, promptID)
+	rec.GoalText = text
+	rec.GoalPlanName = planName
+	if err := r.writeRecord(r.sess.MessagesPath, rec); err != nil {
+		fmt.Fprintf(os.Stderr, "[session] append goal_set failed: %v\n", err)
+	}
+}
+
+// AppendGoalCleared records that the user cancelled an active goal via
+// /goal clear (or one of its aliases).
+func (r *Recorder) AppendGoalCleared(promptID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.baseRecord(TypeGoalCleared, promptID)
+	if err := r.writeRecord(r.sess.MessagesPath, rec); err != nil {
+		fmt.Fprintf(os.Stderr, "[session] append goal_cleared failed: %v\n", err)
+	}
+}
+
+// AppendGoalAchieved records that the evaluator confirmed a goal was met.
+// The reason is the short string returned by the evaluator so resume picker
+// or audit logs can show why the goal completed.
+func (r *Recorder) AppendGoalAchieved(promptID, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := r.baseRecord(TypeGoalAchieved, promptID)
+	rec.GoalReason = reason
+	if err := r.writeRecord(r.sess.MessagesPath, rec); err != nil {
+		fmt.Fprintf(os.Stderr, "[session] append goal_achieved failed: %v\n", err)
+	}
+}
+
 // baseRecord populates the common envelope fields.
 func (r *Recorder) baseRecord(t, promptID string) Record {
 	return Record{

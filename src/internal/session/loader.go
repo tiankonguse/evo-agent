@@ -20,6 +20,20 @@ type LoadResult struct {
 	HasCompactedAt bool   // true if the source contained a compact_boundary
 	Summary        string // the summary stored at the last compact_boundary
 	SourceID       string
+
+	// Goal carries the most recent /goal-set record's payload when the
+	// goal was still active at session-end (i.e. the latest goal-typed
+	// record is a TypeGoalSet, not TypeGoalCleared / TypeGoalAchieved).
+	// nil when no goal was active. The iteration counter resets on
+	// resume per the /goal docs.
+	Goal *RestoredGoal
+}
+
+// RestoredGoal is the minimum information needed to reactivate a goal on
+// resume. The fresh iteration counter is implicit (always starts at 0).
+type RestoredGoal struct {
+	Text     string
+	PlanName string
 }
 
 // LoadForResume reads the messages.jsonl of the given session id and rebuilds
@@ -78,6 +92,26 @@ func LoadForResume(projectDir, sessionID string) (*LoadResult, error) {
 		SourceID:       sessionID,
 		HasCompactedAt: lastBoundary >= 0,
 		Summary:        summary,
+	}
+
+	// Goal records survive compact_boundary — a goal set before the
+	// boundary should still be restorable. Scan ALL records (not just
+	// post-boundary) and let the most recent goal-typed record decide:
+	//   * goal_set last → restore the goal
+	//   * goal_cleared / goal_achieved last → no goal restored
+	for i := len(records) - 1; i >= 0; i-- {
+		switch records[i].Type {
+		case TypeGoalSet:
+			out.Goal = &RestoredGoal{
+				Text:     records[i].GoalText,
+				PlanName: records[i].GoalPlanName,
+			}
+		case TypeGoalCleared, TypeGoalAchieved:
+			// explicit cancellation — no goal restored
+		default:
+			continue
+		}
+		break
 	}
 
 	// Inject the summary first if there was a boundary, so the model sees it

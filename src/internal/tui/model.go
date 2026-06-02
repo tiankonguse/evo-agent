@@ -55,6 +55,16 @@ type Model struct {
 	// Persistent plan items (updated via EvPlan)
 	planItems []ui.PlanSnapshot
 
+	// Active /goal indicator (updated via EvGoal). When goalActive is
+	// false the indicator is hidden.
+	goalActive   bool
+	goalText     string
+	goalIter     int
+	goalMaxIter  int
+	goalSetAtMs  int64
+	goalLastKind string // last lifecycle event ("evaluating", "continuing", ...)
+	goalLastNote string // brief reason / status to surface in the indicator
+
 	// Slash command completion
 	completionActive bool     // dropdown is visible
 	completionItems  []string // filtered list of matching names
@@ -370,6 +380,58 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 	case ui.EvPlan:
 		// Store updated session plan; View() will re-render it live
 		m.planItems = e.PlanItems
+
+	case ui.EvGoal:
+		// Lifecycle dispatch — keeps the indicator's display state in
+		// sync with what the agent loop's goal logic decided.
+		switch e.GoalKind {
+		case "set":
+			m.goalActive = true
+			m.goalText = e.GoalText
+			m.goalIter = e.GoalIter
+			m.goalMaxIter = e.GoalMaxIter
+			m.goalSetAtMs = e.GoalSetAt
+			m.goalLastKind = "set"
+			m.goalLastNote = ""
+			m.info.Goal = e.GoalText
+		case "evaluating":
+			m.goalLastKind = "evaluating"
+			m.goalLastNote = "checking…"
+		case "continuing":
+			m.goalIter = e.GoalIter
+			m.goalLastKind = "continuing"
+			m.goalLastNote = e.GoalReason
+		case "achieved":
+			m.goalActive = false
+			m.goalLastKind = "achieved"
+			m.goalLastNote = e.GoalReason
+			m.info.Goal = ""
+			cmds = append(cmds, tea.Println(systemStyle.Render(
+				"✓ /goal achieved: "+e.GoalReason,
+			)+"\n"))
+		case "cleared":
+			m.goalActive = false
+			m.goalLastKind = "cleared"
+			m.goalLastNote = ""
+			m.info.Goal = ""
+			cmds = append(cmds, tea.Println(systemStyle.Render("◎ /goal cleared")+"\n"))
+		case "capped":
+			m.goalActive = false
+			m.goalLastKind = "capped"
+			m.goalLastNote = "iteration cap"
+			m.info.Goal = ""
+			cmds = append(cmds, tea.Println(systemStyle.Render(fmt.Sprintf(
+				"× /goal capped at %d iterations — auto-cleared", e.GoalMaxIter,
+			))+"\n"))
+		case "status":
+			if e.GoalText == "" {
+				cmds = append(cmds, tea.Println(systemStyle.Render("◎ /goal: no active goal")+"\n"))
+			} else {
+				cmds = append(cmds, tea.Println(systemStyle.Render(fmt.Sprintf(
+					"◎ /goal active: %s (iter %d/%d)", e.GoalText, e.GoalIter, e.GoalMaxIter,
+				))+"\n"))
+			}
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -400,6 +462,11 @@ func (m *Model) View() tea.View {
 	// Show session plan when active
 	if panel := renderPlanPanel(m.planItems, w); panel != "" {
 		parts = append(parts, panel)
+	}
+
+	// Show /goal indicator when active
+	if line := m.renderGoalIndicator(w); line != "" {
+		parts = append(parts, line)
 	}
 
 	// Show completion dropdown when active

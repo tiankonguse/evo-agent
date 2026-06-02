@@ -70,7 +70,7 @@ cannot corrupt a line.
 
 Writes happen at four points in the agent loop:
 
-1. **User turn entry** (`agent.RunQuery` / `RunQueryDirect` / `Run`): one
+1. **User turn entry** (`agent.RunQuery` / `Run`): one
    `user` record with the freshly built `MessageParam`.
 2. **Assistant response** (`agent.Loop`, after `state.Messages = append(...,
    resp.ToParam())`): one `assistant` record with `input_tokens` and

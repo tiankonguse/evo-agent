@@ -554,10 +554,19 @@ const (
 
 ### Functions
 
-| Function                   | Color   | Output format                    |
-|----------------------------|---------|----------------------------------|
-| `PrintThinking(text string)` | Green   | `THINKING: <text>`             |
-| `PrintText(text string)`     | Cyan    | `TEXT: <text>`                 |
-| `PrintToolCall(name string)` | Blue    | `DEBUG: Tool called: <name>`   |
-| `PrintCommand(cmd string)`   | Yellow  | `$ <cmd>`                      |
-| `PrintError(msg string)`     | Red     | `<msg>`                        |
+All `Print*` / `Emit*` helpers below route through `globalSink`, which is `TerminalSink{}` by default and swapped to `tui.Sink` when the TUI starts. The "Plain output" column shows what `TerminalSink` writes; the TUI consumes the same `Event` and renders it in the live view.
+
+| Function                                                                                | Event kind     | Plain output                                          |
+|-----------------------------------------------------------------------------------------|----------------|-------------------------------------------------------|
+| `PrintThinking(text string)`                                                            | `EvThinking`   | Green `THINKING: <text>`                              |
+| `PrintText(text string)`                                                                | `EvText`       | Cyan `<text>`                                         |
+| `PrintToolCall(id, name, input string)`                                                 | `EvToolCall`   | Blue `DEBUG: Tool called: <name>`                     |
+| `PrintToolResult(id, output string, isError bool)`                                      | `EvToolResult` | First 200 chars of `output` (no prefix)               |
+| `PrintCommand(cmd string)`                                                              | *(no-op)*      | *(nothing — kept for API compatibility)*              |
+| `PrintError(msg string)`                                                                | `EvSystem`     | Magenta `<msg>`                                       |
+| `PrintSystem(msg string)`                                                               | `EvSystem`     | Magenta `<msg>`                                       |
+| `PrintTokens(model string, in, out int64, stopReason, blockSummary string)`             | `EvTokens`     | Magenta `DEBUG: model=… in=… out=… stop=… blocks=[…]` |
+| `PrintDone()`                                                                           | `EvDone`       | *(nothing in plain mode)*                             |
+| `EmitTodo(items []TodoItem, topic string)`                                              | `EvTodo`       | Magenta `── TODO ──` block with status markers        |
+| `EmitPlan(plans []PlanSnapshot)`                                                        | `EvPlan`       | *(plain mode prints nothing — TUI panel only)*        |
+| `EmitGoal(ev Event)` / `PrintGoal(kind, text, reason, planName, iter, max int, setAtMs int64)` | `EvGoal` | Yellow/green/red one-liner per `GoalKind` (set/evaluating/continuing/achieved/cleared/capped/status) |

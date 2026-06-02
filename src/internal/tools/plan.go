@@ -232,6 +232,74 @@ func (pm *PlanManager) Create(name, planContent string) (string, error) {
 	return fmt.Sprintf("Plan created: %s\nPath: %s", name, dir), nil
 }
 
+// CreateForGoal is a client-callable helper that creates a plan associated
+// with a /goal command. It builds a minimal plan.md from the goal text and
+// approach hint and calls Create.
+//
+// Used by the /goal slash command in main.go to spin up a persistent plan
+// alongside the in-memory goal so the work survives session restarts.
+func (pm *PlanManager) CreateForGoal(name, goalText, approach string) (string, error) {
+	body := fmt.Sprintf(`# Plan: %s
+
+## Goal
+%s
+
+## Approach
+%s
+
+## Tasks
+(empty — use plan_task_create to add tasks; the agent will populate this as it
+breaks the goal into steps)
+
+## Source
+This plan was created by the /goal slash command. Created at %s.
+`,
+		name,
+		strings.TrimSpace(goalText),
+		strings.TrimSpace(approach),
+		time.Now().Format(time.RFC3339),
+	)
+	return pm.Create(name, body)
+}
+
+// DerivePlanName slugifies a goal description into a plan directory name in
+// the project's `YYYY-MM-DD-<slug>` convention. Exported so the /goal slash
+// command can compute the same name it will pass to CreateForGoal.
+func DerivePlanName(goalText string) string {
+	date := time.Now().Format("2006-01-02")
+	slug := slugify(goalText)
+	if slug == "" {
+		slug = "goal"
+	}
+	if len(slug) > 40 {
+		slug = slug[:40]
+	}
+	return date + "-" + slug
+}
+
+// slugify lowercases, replaces non-alphanumeric runs with single dashes, and
+// trims dashes from the ends. Keeps ASCII-only output so directory names
+// stay portable across filesystems.
+func slugify(s string) string {
+	var b strings.Builder
+	prevDash := true // suppresses leading dashes
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := b.String()
+	out = strings.TrimRight(out, "-")
+	return out
+}
+
 // List lists all plans in todo/ and done/ directories.
 func (pm *PlanManager) List() string {
 	pm.mu.RLock()

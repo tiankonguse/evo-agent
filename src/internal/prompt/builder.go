@@ -106,6 +106,16 @@ type PlanProvider interface {
 	LoadPrompt() string
 }
 
+// GoalProvider abstracts access to the active /goal condition.
+// goal.Global satisfies this interface directly.
+//
+// The goal text is injected into every system prompt build so the model is
+// continuously reminded of the target. This lives in the prompt rather
+// than the message history to avoid polluting the conversation transcript.
+type GoalProvider interface {
+	ActiveGoalText() string
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Builder
 // ────────────────────────────────────────────────────────────────────────────
@@ -118,6 +128,7 @@ type Builder struct {
 	memory         MemoryProvider
 	skills         SkillsProvider
 	plan           PlanProvider
+	goal           GoalProvider
 	agentMdContent string // loaded once at startup
 	memoryGuidance string // constant guidance text
 	planGuidance   string // constant plan workflow guidance
@@ -150,6 +161,12 @@ func (b *Builder) SetPlanProvider(p PlanProvider) {
 // SetPlanGuidance sets the session plan workflow guidance text.
 func (b *Builder) SetPlanGuidance(guidance string) {
 	b.planGuidance = guidance
+}
+
+// SetGoalProvider sets the active-goal provider so build*Status() can
+// inject the current goal into every turn's system prompt.
+func (b *Builder) SetGoalProvider(p GoalProvider) {
+	b.goal = p
 }
 
 // Build assembles the full system prompt by joining all sections.
@@ -191,6 +208,7 @@ func (b *Builder) BuildSections() []string {
 		// 记忆可能变化，模型可能切换
 		b.buildMemories(),    // Persistent memories across sessions
 		b.buildPlanStatus(),  // Active session plans status
+		b.buildGoalStatus(),  // Active /goal condition (if any)
 		b.buildEnvironment(), // Git, shell, OS, model, date
 	}
 
@@ -263,6 +281,19 @@ func (b *Builder) buildPlanStatus() string {
 		return ""
 	}
 	return b.plan.LoadPrompt()
+}
+
+func (b *Builder) buildGoalStatus() string {
+	if b.goal == nil {
+		return ""
+	}
+	text := b.goal.ActiveGoalText()
+	if text == "" {
+		return ""
+	}
+	return "<active-goal>\n" + text + "\n\nA /goal command is active: keep working toward this condition. " +
+		"After every turn that ends with no tool calls, an evaluator will check whether the goal is met. " +
+		"If you believe the goal is achieved, simply produce a final answer with no further tool_use blocks.\n</active-goal>"
 }
 
 func (b *Builder) buildSkillsCatalog() string {

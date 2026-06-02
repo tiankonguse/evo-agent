@@ -1,26 +1,24 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"evo-agent/internal/config"
+	"evo-agent/internal/llm"
 	"evo-agent/internal/prompt"
 	"evo-agent/internal/session"
-	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 	"evo-agent/internal/ui"
 )
 
 // Agent orchestrates multi-turn conversations with the model.
 type Agent struct {
-	client   *anthropic.Client
+	provider llm.Provider
 	cfg      *config.Config
 	prompt   *prompt.Builder
 	dumpFile string // session dump file path (set on first dump)
@@ -36,10 +34,16 @@ type Agent struct {
 	currentPromptID string
 }
 
-// New creates an Agent with the given LLM client, configuration, and prompt builder.
+// New creates an Agent with the given LLM provider, configuration, and prompt builder.
 // It also wires up tools.SubagentRunner so the task tool can spawn child agents.
-func New(client *anthropic.Client, cfg *config.Config, pb *prompt.Builder) *Agent {
-	a := &Agent{client: client, cfg: cfg, prompt: pb}
+//
+// The provider abstraction (internal/llm.Provider) lets the agent talk to
+// either the Anthropic Messages API or the OpenAI Chat Completions API
+// while keeping anthropic.MessageNewParams / *anthropic.Message as the
+// canonical internal types — translation only happens inside the
+// provider implementation.
+func New(provider llm.Provider, cfg *config.Config, pb *prompt.Builder) *Agent {
+	a := &Agent{provider: provider, cfg: cfg, prompt: pb}
 	tools.RegisterSubagentRunner(func(systemPrompt string, messages []anthropic.MessageParam) string {
 		return a.RunSubagent(systemPrompt, messages, "")
 	})
@@ -50,8 +54,8 @@ func New(client *anthropic.Client, cfg *config.Config, pb *prompt.Builder) *Agen
 }
 
 // AttachSession binds a persistent session to the agent. Subsequent
-// RunQuery / RunQueryDirect calls will record their messages, compact
-// boundaries, and subagent activity to the session transcript.
+// RunQuery calls will record their messages, compact boundaries, and
+// subagent activity to the session transcript.
 func (a *Agent) AttachSession(s *session.Session) {
 	a.session = s
 }
@@ -75,7 +79,7 @@ func (a *Agent) autoCompact(state *LoopState) {
 	ui.PrintSystem(fmt.Sprintf("[auto compact triggered: %d chars]", contextSize))
 
 	newMessages, err := CompactHistory(
-		a.client,
+		a.provider,
 		a.cfg.ModelID,
 		state.Messages,
 		state.CompactState,
@@ -103,7 +107,7 @@ func (a *Agent) manualCompact(state *LoopState, content []anthropic.ContentBlock
 
 		ui.PrintSystem("[manual compact requested]")
 		newMessages, err := CompactHistory(
-			a.client,
+			a.provider,
 			a.cfg.ModelID,
 			state.Messages,
 			state.CompactState,
@@ -140,7 +144,7 @@ func (a *Agent) Loop(state *LoopState) bool {
 
 		systemPrompt := a.prompt.Build()
 
-		resp, err := a.client.Messages.New(context.Background(), anthropic.MessageNewParams{
+		resp, err := a.provider.SendMessage(context.Background(), anthropic.MessageNewParams{
 			Model: anthropic.Model(a.cfg.ModelID),
 			System: []anthropic.TextBlockParam{
 				{Text: systemPrompt},
@@ -201,6 +205,13 @@ func (a *Agent) Loop(state *LoopState) bool {
 
 		toolResults := tools.Execute(resp.Content, state.CompactState)
 		if len(toolResults) == 0 {
+			// No tool calls — the model thinks it's done. If a /goal is
+			// active, ask the evaluator whether the condition is met; on
+			// "not met" the evaluator-injected continuation message lands
+			// in state.Messages and we keep looping.
+			if a.maybeContinueForGoal(state) {
+				continue
+			}
 			state.TransitionReason = ""
 			return false
 		}
@@ -230,95 +241,40 @@ func (a *Agent) Loop(state *LoopState) bool {
 }
 
 // Run is the top-level REPL for plain-text mode.
-func (a *Agent) Run(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	var history []anthropic.MessageParam
-	compactState := &CompactState{}
+//
+// Deprecated: replaced by the unified Repl driver in repl.go. Kept-as-stub
+// removed; callers should construct an `agent.NewTerminalFrontend(stdin)`
+// and `agent.NewRepl(a, fe, initialHistory).Run()` instead.
+//
+// (No body — function fully removed; this comment block intentionally
+// stays as a breadcrumb so anyone searching for `func (a *Agent) Run`
+// finds the migration hint.)
+
+// RunQuery drives one user turn through the agent loop and signals done
+// via doneCh. The caller is responsible for everything that happens BEFORE
+// the LLM is asked:
+//
+//  1. construct the `anthropic.MessageParam` (single text block, slash
+//     two-block message, /goal kickoff, etc.)
+//  2. append it to `*history`
+//  3. record it via `a.Session().Recorder.AppendUser(promptID, msg)` if
+//     persistence is desired (recorder may be nil)
+//
+// The `promptID` argument MUST match the one the caller used in step 3 —
+// it is threaded through the loop so the assistant + tool_result records
+// emitted during this turn share a parent identifier with the user
+// message. Callers that don't have a recorder can pass any unique string
+// (or `session.NewPromptID()`).
+//
+// This function only owns what comes after: building `LoopState`, running
+// the loop, and writing back the resulting history / compact state.
+//
+// Used by the unified Repl driver (repl.go); not normally called directly
+// from outside the agent package.
+func (a *Agent) RunQuery(promptID string, history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
 	var recorder *session.Recorder
 	if a.session != nil {
 		recorder = a.session.Recorder
-	}
-
-	for {
-		fmt.Printf("%s >> %s", ui.ColorCyan, ui.ColorReset)
-		if !scanner.Scan() {
-			break
-		}
-		query := strings.TrimSpace(scanner.Text())
-		if query == "" || query == "q" || query == "exit" {
-			break
-		}
-
-		// ── Client-side commands (not sent to LLM) ──
-		if query == "/dump-prompts" {
-			a.DumpNow(history)
-			fmt.Println("[dump-prompts: dumped current state]")
-			continue
-		}
-
-		// ── Slash command interception ──
-		var newMsg anthropic.MessageParam
-		if result := skills.Dispatch(query); result.Found {
-			if result.Content != "" {
-				newMsg = anthropic.NewUserMessage(
-					anthropic.NewTextBlock(result.Prompt),
-					anthropic.NewTextBlock(result.Content),
-				)
-			} else {
-				newMsg = anthropic.NewUserMessage(
-					anthropic.NewTextBlock(result.Prompt),
-				)
-			}
-		} else {
-			newMsg = anthropic.NewUserMessage(
-				anthropic.NewTextBlock(query),
-			)
-		}
-
-		promptID := session.NewPromptID()
-		history = append(history, newMsg)
-		if recorder != nil {
-			recorder.AppendUser(promptID, newMsg)
-		}
-
-		state := &LoopState{
-			Messages:     history,
-			TurnCount:    1,
-			CompactState: compactState,
-			Recorder:     recorder,
-			PromptID:     promptID,
-		}
-		a.Loop(state)
-		history = state.Messages
-		compactState = state.CompactState
-
-		if len(history) > 0 {
-			last := history[len(history)-1]
-			if last.Role == anthropic.MessageParamRoleAssistant {
-				for _, part := range last.Content {
-					if part.OfText != nil && part.OfText.Text != "" {
-						fmt.Println(part.OfText.Text)
-					}
-				}
-			}
-		}
-		fmt.Println()
-	}
-}
-
-// RunQuery executes a single query and signals done via doneCh.
-// Used by the TUI mode.
-func (a *Agent) RunQuery(query string, history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
-	var recorder *session.Recorder
-	if a.session != nil {
-		recorder = a.session.Recorder
-	}
-	promptID := session.NewPromptID()
-
-	newMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(query))
-	*history = append(*history, newMsg)
-	if recorder != nil {
-		recorder.AppendUser(promptID, newMsg)
 	}
 
 	state := &LoopState{
@@ -327,33 +283,6 @@ func (a *Agent) RunQuery(query string, history *[]anthropic.MessageParam, compac
 		CompactState: *compactState,
 		Recorder:     recorder,
 		PromptID:     promptID,
-	}
-	a.Loop(state)
-	*history = state.Messages
-	*compactState = state.CompactState
-
-	close(doneCh)
-}
-
-// RunQueryDirect executes the agent loop without appending a new message.
-// The caller has already appended the user message(s) to history.
-// Used by slash command handling where multi-block messages are constructed.
-//
-// The caller is responsible for recording the user message they appended;
-// this function only records the loop's subsequent assistant + tool_result
-// messages.
-func (a *Agent) RunQueryDirect(history *[]anthropic.MessageParam, compactState **CompactState, doneCh chan<- struct{}) {
-	var recorder *session.Recorder
-	if a.session != nil {
-		recorder = a.session.Recorder
-	}
-
-	state := &LoopState{
-		Messages:     *history,
-		TurnCount:    1,
-		CompactState: *compactState,
-		Recorder:     recorder,
-		PromptID:     session.NewPromptID(),
 	}
 	a.Loop(state)
 	*history = state.Messages

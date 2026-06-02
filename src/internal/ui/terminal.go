@@ -67,3 +67,26 @@ func EmitTodo(items []TodoItem, topic string) {
 func EmitPlan(plans []PlanSnapshot) {
 	globalSink.Emit(Event{Kind: EvPlan, PlanItems: plans})
 }
+
+// EmitGoal broadcasts a goal lifecycle event. kind matches the strings
+// listed on Event.GoalKind.
+func EmitGoal(ev Event) {
+	ev.Kind = EvGoal
+	globalSink.Emit(ev)
+}
+
+// PrintGoal is a convenience wrapper that builds an EvGoal Event and emits
+// it. The TerminalSink prints a one-line summary; the TUI renders a richer
+// indicator.
+func PrintGoal(kind, text, reason, planName string, iter, maxIter int, setAtMs int64) {
+	globalSink.Emit(Event{
+		Kind:         EvGoal,
+		GoalKind:     kind,
+		GoalText:     text,
+		GoalReason:   reason,
+		GoalPlanName: planName,
+		GoalIter:     iter,
+		GoalMaxIter:  maxIter,
+		GoalSetAt:    setAtMs,
+	})
+}

@@ -113,6 +113,13 @@ var (
 			Foreground(lipgloss.Color("#1f6feb")).
 			Bold(true)
 
+	// ── Goal indicator ───────────────────────────────────────────────────────
+	// One-line surface in the live bottom area showing /goal active state.
+	// Yellow/amber matches Claude Code's `◎ /goal active` colour family.
+	goalIndicatorStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#d29922")).
+				Bold(true)
+
 	// ── Completion dropdown ──────────────────────────────────────────────────
 	completionBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).

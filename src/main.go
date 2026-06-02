@@ -8,37 +8,23 @@ import (
 	"sort"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"evo-agent/internal/agent"
 	"evo-agent/internal/config"
+	"evo-agent/internal/goal"
+	"evo-agent/internal/llm"
 	"evo-agent/internal/prompt"
 	"evo-agent/internal/session"
 	"evo-agent/internal/skills"
 	"evo-agent/internal/tools"
 	"evo-agent/internal/tui"
-	"evo-agent/internal/ui"
 )
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.13.0"
+	agentVersion = "0.16.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
-
-func BuildOptions(cfg *config.Config) []option.RequestOption {
-	opts := []option.RequestOption{}
-	if cfg.BaseURL != "" {
-		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
-		os.Unsetenv("ANTHROPIC_AUTH_TOKEN")
-	}
-	if cfg.APIKey != "" {
-		opts = append(opts, option.WithAPIKey(cfg.APIKey))
-	} else {
-		opts = append(opts, option.WithAPIKey("dummy"))
-	}
-	return opts
-}
 
 func main() {
 	plain := flag.Bool("plain", false, "disable TUI, use plain text output")
@@ -53,8 +39,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts := BuildOptions(cfg)
-	client := anthropic.NewClient(opts...)
+	provider, err := llm.New(llm.Config{
+		ProviderID:       cfg.ProviderID,
+		ModelID:          cfg.ModelID,
+		AnthropicAPIKey:  cfg.APIKey,
+		AnthropicBaseURL: cfg.BaseURL,
+		OpenAIAPIKey:     cfg.OpenAIAPIKey,
+		OpenAIBaseURL:    cfg.OpenAIBaseURL,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error: llm.New:", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("[%s] v%s | model=%s\n", agentName, agentVersion, cfg.ModelID)
 
@@ -90,7 +86,11 @@ func main() {
 	builder.SetPlanGuidance(tools.PlanGuidance)
 	builder.SetPlanProvider(tools.GlobalPlan)
 
-	a := agent.New(&client, cfg, builder)
+	// Wire active /goal provider so the system prompt always reflects the
+	// current condition.
+	builder.SetGoalProvider(goal.Global)
+
+	a := agent.New(provider, cfg, builder)
 
 	// ── Session persistence: create or restore ──────────────────────────
 	sess, err := session.NewSession(cfg.ProjectDir, agentVersion)
@@ -111,6 +111,10 @@ func main() {
 		if sess != nil {
 			sess.Recorder.AppendResumeMarker(res.SourceID, res.RestoredCount)
 		}
+		if res.Goal != nil {
+			goal.Global.Set(res.Goal.Text, res.Goal.PlanName)
+			fmt.Printf("[goal] restored: %s (plan=%s)\n", res.Goal.Text, res.Goal.PlanName)
+		}
 		fmt.Printf("[resume] restored %d messages from session %s", res.RestoredCount, res.SourceID)
 		if res.HasCompactedAt {
 			fmt.Print(" (with compact summary)")
@@ -130,18 +134,39 @@ func main() {
 
 	tools.PrintToolList()
 	if *plain {
-		// Plain-text REPL (original behaviour) — TerminalSink is the default.
-		runPlain(a, sess, initialHistory)
+		// Plain-text REPL — uses the unified Repl driver with a
+		// TerminalFrontend over stdin. Existing TerminalSink (default
+		// sink) renders assistant text, tool calls, and tool results
+		// live as the loop runs, so no extra wiring is needed here.
+		runPlain(a, initialHistory)
 		return
 	}
 
 	// ── TUI mode ─────────────────────────────────────────────────────────────
 	// ui.SetSink is called inside tui.Run after the Sink is created.
 
-	// Determine provider from base URL or default
-	provider := "Anthropic"
-	if cfg.BaseURL != "" {
-		provider = cfg.BaseURL
+	// Determine provider label for the TUI sidebar from PROVIDER_ID,
+	// then prefer an explicit base URL when one is set so users with a
+	// gateway/proxy see the actual endpoint in the sidebar.
+	providerLabel := "Anthropic"
+	switch cfg.ProviderID {
+	case "openai":
+		providerLabel = "OpenAI"
+		if cfg.OpenAIBaseURL != "" {
+			providerLabel = cfg.OpenAIBaseURL
+		}
+	default:
+		if cfg.BaseURL != "" {
+			providerLabel = cfg.BaseURL
+		}
+	}
+
+	// Canonical protocol id for the bottom status bar — empty / unset
+	// is normalized to "anthropic" so the bar always carries an explicit
+	// value and users can tell at a glance which protocol is live.
+	providerID := cfg.ProviderID
+	if providerID == "" {
+		providerID = "anthropic"
 	}
 
 	// Collect tool names
@@ -155,7 +180,8 @@ func main() {
 		Version:      agentVersion,
 		ProjectDir:   cfg.ProjectDir,
 		Model:        cfg.ModelID,
-		Provider:     provider,
+		Provider:     providerLabel,
+		ProviderID:   providerID,
 		ContextLimit: contextLimit,
 		Skills:       skillNames,
 		Commands:     commandNames,
@@ -169,72 +195,13 @@ func main() {
 	// Channel for user queries (TUI → agent goroutine)
 	queryCh := make(chan string, 4)
 
-	// Agent goroutine: processes one query at a time
+	// Agent goroutine: drives the unified Repl with a ChannelFrontend
+	// that reads queries from the TUI's textarea and emits ui.PrintDone
+	// after each turn so the textarea unblocks.
 	go func() {
-		history := initialHistory
-		compactState := &agent.CompactState{}
-		for query := range queryCh {
-			// ── Client-side commands (not sent to LLM) ──
-			if query == "/dump-prompts" {
-				a.DumpNow(history)
-				ui.PrintSystem("[dump-prompts: dumped current state]")
-				ui.PrintDone()
-				continue
-			}
-
-			// ── /resume <id> client-side restore ──
-			if rid, ok := parseResumeArg(query); ok {
-				if rid == "" {
-					ui.PrintSystem("Usage: /resume <session-id>. In the TUI, type /resume and pick from the dropdown.")
-					ui.PrintDone()
-					continue
-				}
-				res, err := session.LoadForResume(cfg.ProjectDir, rid)
-				if err != nil {
-					ui.PrintError(fmt.Sprintf("/resume failed: %v", err))
-					ui.PrintDone()
-					continue
-				}
-				history = res.Messages
-				if sess != nil {
-					sess.Recorder.AppendResumeMarker(res.SourceID, res.RestoredCount)
-				}
-				ui.PrintSystem(fmt.Sprintf("✓ Restored %d messages from session %s", res.RestoredCount, res.SourceID))
-				ui.PrintDone()
-				continue
-			}
-
-			// ── Slash command interception ──
-			if result := skills.Dispatch(query); result.Found {
-				promptID := session.NewPromptID()
-				var newMsg anthropic.MessageParam
-				if result.Content != "" {
-					newMsg = anthropic.NewUserMessage(
-						anthropic.NewTextBlock(result.Prompt),
-						anthropic.NewTextBlock(result.Content),
-					)
-				} else {
-					newMsg = anthropic.NewUserMessage(
-						anthropic.NewTextBlock(result.Prompt),
-					)
-				}
-				history = append(history, newMsg)
-				if sess != nil {
-					sess.Recorder.AppendUser(promptID, newMsg)
-				}
-				doneCh := make(chan struct{})
-				// Use RunQueryDirect — history already updated, recorder is
-				// still picked up via a.session inside RunQueryDirect.
-				a.RunQueryDirect(&history, &compactState, doneCh)
-				<-doneCh
-				ui.PrintDone()
-				continue
-			}
-			doneCh := make(chan struct{})
-			a.RunQuery(query, &history, &compactState, doneCh)
-			<-doneCh
-			ui.PrintDone()
-		}
+		fe := agent.NewChannelFrontend(queryCh)
+		repl := agent.NewRepl(a, fe, initialHistory)
+		repl.Run()
 	}()
 
 	// Print padding lines so TUI View doesn't overwrite startup info above
@@ -246,55 +213,29 @@ func main() {
 	}
 }
 
-// runPlain is the plain-mode REPL with session persistence wired in.
-// It mirrors agent.Agent.Run but seeds initial history and intercepts
-// /resume <id>.
-func runPlain(a *agent.Agent, sess *session.Session, initialHistory []anthropic.MessageParam) {
-	// agent.Run already handles session persistence via a.session, but it
-	// constructs its own empty history. Seed history via Run when no resume
-	// is needed; otherwise drive a small loop here.
-	if len(initialHistory) == 0 {
-		a.Run(os.Stdin)
-		return
-	}
-	// Echo the resumed messages so the user sees them.
-	for _, m := range initialHistory {
-		role := "user"
-		if m.Role == anthropic.MessageParamRoleAssistant {
-			role = "assistant"
-		}
-		for _, blk := range m.Content {
-			if blk.OfText != nil && blk.OfText.Text != "" {
-				fmt.Printf("[%s] %s\n", role, blk.OfText.Text)
+// runPlain is the plain-mode REPL. Constructs a TerminalFrontend over
+// stdin and drives the unified Repl. Initial history (from --resume) is
+// echoed once, then the Repl owns the conversation forever.
+func runPlain(a *agent.Agent, initialHistory []anthropic.MessageParam) {
+	if len(initialHistory) > 0 {
+		// Echo the resumed messages so the user sees what they're picking
+		// up from before the prompt appears.
+		for _, m := range initialHistory {
+			role := "user"
+			if m.Role == anthropic.MessageParamRoleAssistant {
+				role = "assistant"
+			}
+			for _, blk := range m.Content {
+				if blk.OfText != nil && blk.OfText.Text != "" {
+					fmt.Printf("[%s] %s\n", role, blk.OfText.Text)
+				}
 			}
 		}
+		fmt.Println("[resume complete — continue the conversation below]")
 	}
-	fmt.Println("[resume complete — continue the conversation below]")
-	a.Run(os.Stdin)
-}
-
-// parseResumeArg returns the argument of a "/resume" command if present.
-// Returns (id, true) for "/resume <id>" or "/resume" alone (id=""), and
-// (_, false) for anything else.
-func parseResumeArg(query string) (string, bool) {
-	if query == "/resume" {
-		return "", true
-	}
-	const prefix = "/resume "
-	if len(query) > len(prefix) && query[:len(prefix)] == prefix {
-		return trimSpace(query[len(prefix):]), true
-	}
-	return "", false
-}
-
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t' || s[len(s)-1] == '\n') {
-		s = s[:len(s)-1]
-	}
-	return s
+	fe := agent.NewTerminalFrontend(os.Stdin)
+	repl := agent.NewRepl(a, fe, initialHistory)
+	repl.Run()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

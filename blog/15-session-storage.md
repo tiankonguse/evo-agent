@@ -5,9 +5,9 @@ description: 第十四篇讲了 Session Plan，把"任务进度"搬到了磁盘�
 keywords: agent,session,persistence,jsonl,resume,golang  
 tags: [agent, session, persistence, jsonl, resume, golang]  
 categories: [程序人生]  
-updateDate: 2026-05-31 12:00:00  
+updateDate: 2026-05-31 21:00:00  
 published: true  
-source: ""
+source: "https://mp.weixin.qq.com/s/zyVNi0JXBlbO-z3KtZEFcA"
 ---
 
 
@@ -21,6 +21,10 @@ source: ""
 
 
 第十四篇把"任务进度"搬到了磁盘，但**对话历史依然只活在内存里**。你和 Agent 聊了一个多小时，它读了一堆代码、调了几十次工具、吐了几千 token 的思考——按一下 Ctrl+C，全部归零。下次启动时，Agent 又是一个崭新的、毫无记忆的新人。  
+
+
+
+![截图](https://res2026.tiankonguse.com/images/2026/06/01/001.png)
 
 
 ## 一、丢失的不只是消息
@@ -44,7 +48,6 @@ source: ""
 所以 Session 持久化要解决的真正问题是：**把一次会话所有可观察事件，按发生顺序，原样落到磁盘上**。  
 
 
-![截图](https://res2026.tiankonguse.com/images/2026/05/31/001.png)
 
 
 ## 二、为什么是 JSONL
@@ -75,6 +78,10 @@ JSONL 把这些问题全部消解。每条记录独立一行，写入逻辑就�
 这是一种很老派的设计。日志、消息队列、事件溯源系统——大家都在用 append-only 的思路。原因是它**天然抗崩溃**：写入操作是原子的（一行不超过 PIPE_BUF 的话甚至能保证多进程并发追加不会交错），文件结构永远自洽，恢复逻辑只需要"从头扫到尾"。  
 
 
+
+![截图](https://res2026.tiankonguse.com/images/2026/06/01/002.png)
+
+
 ```mermaid
 flowchart LR
     A["每一轮事件"] --> B["序列化成 JSON"]
@@ -93,8 +100,7 @@ flowchart LR
 每次开关文件听起来很浪费。但 Session 写入是**低频操作**——人和 Agent 一来一回最多每秒一两次，文件 IO 在这个量级上完全不是瓶颈。换来的是简单到不会出 bug 的写入逻辑。  
 
 
-
-## 四、Session ID 的小心思
+## 三、Session ID 的小心思
 
 
 会话目录名长这样：`1780227556183_b525857d`。  
@@ -125,13 +131,14 @@ func NewSessionID() string {
 这个 ID 格式看起来微不足道，但每个细节都在为后续的"列表展示"和"文件解析"省工。  
 
 
-## 五、写入的四个时机
+## 四、写入的四个时机
 
 
 写入 Session 的位置散落在 Agent Loop 里，但其实只有四个明确的钩子点。  
 
 
-![截图](https://res2026.tiankonguse.com/images/2026/05/31/002.png)
+
+![截图](https://res2026.tiankonguse.com/images/2026/06/01/003.png)
 
 
 ```mermaid
@@ -169,7 +176,7 @@ sequenceDiagram
 写入逻辑都封装在 `recorder.go` 里，调用方完全不需要关心序列化、文件路径、错误处理这些细节。**Best-effort 写入**——磁盘出错了打一行 stderr，不影响 Agent 继续聊天。这是个重要的工程取舍：Session 是辅助设施，不应该让 Session 故障拖死主流程。  
 
 
-## 六、子代理的侧链
+## 五、子代理的侧链
 
 
 第九篇讲过 Subagent——主 Agent 派一个新 Agent 干一件独立的事，子 Agent 跑完只把最后一段文本传回来。  
@@ -199,6 +206,9 @@ sessions/1780227556183_b525857d/
 真正的子 Agent 内部对话独立写到 `subagent/` 目录下的侧链文件里。  
 
 
+![截图](https://res2026.tiankonguse.com/images/2026/06/01/004.png)
+
+
 ```mermaid
 graph TD
     A["主 Session\nmessages.jsonl"] --> B["...常规对话..."]
@@ -224,7 +234,7 @@ graph TD
 **调试时定位精确**——主轨迹给你一个时间点和文件名，一跳就能跳到子代理当时的完整执行轨迹。  
 
 
-## 七、Compact Boundary：恢复的水位线
+## 六、Compact Boundary：恢复的水位线
 
 
 JSONL 完整地记录了所有事件。但**恢复时不能把所有事件原样回放**。  
@@ -241,8 +251,8 @@ JSONL 完整地记录了所有事件。但**恢复时不能把所有事件原样
 正确的恢复规则是这样：**找到最后一条 `compact_boundary` 记录，不加载这条之前的所有 user/assistant 记录，用 boundary 里的摘要代替它们**。  
 
 
-![截图](https://res2026.tiankonguse.com/images/2026/05/31/003.png)
 
+![截图](https://res2026.tiankonguse.com/images/2026/06/01/005.png)
 
 ```mermaid
 flowchart LR
@@ -287,7 +297,7 @@ flowchart LR
 如果文件里有多次 compact，只用最后一次。前面那些 boundary 之间的内容也都丢弃——它们已经被后续的 compact 进一步总结过了，再回放一次只会增加冗余。  
 
 
-## 八、三个入口
+## 七、三个入口
 
 
 有了底层的写和读，上层接入就有多种方式。evo-agent 提供了三个入口。  
@@ -305,7 +315,7 @@ flowchart LR
 三种入口背后的核心读路径都是同一个 `LoadForResume` 函数。**最少的代码路径，最多的入口选择。**  
 
 
-## 十、退出时的提示
+## 八、退出时的提示
 
 
 很多工具退出后什么都不留下，用户根本不知道刚才那段会话是不是真的存到了哪里。  
@@ -333,7 +343,7 @@ Resume this session with: evo-agent --resume 1780227556183_b525857d
 这是一个非常小的细节，但它把"功能存在"和"用户能用上"这两件事真正连起来了。很多优秀的系统功能死在没有这一行提示——做了等于没做。  
 
 
-## 十二、最后
+## 九、最后
 
 
 从第十一篇 Auto Memory，到第十四篇 Session Plan，再到这一篇 Session 持久化——evo-agent 在不同尺度上把"应该是临时的"和"应该是永久的"东西分得越来越清。  
@@ -344,6 +354,9 @@ Resume this session with: evo-agent --resume 1780227556183_b525857d
 
 三层存储，三种生命周期，三种恢复方式。共同支撑起一个"能跨越进程、跨越压缩、跨越天数"持续工作的 Agent。  
 
+
+
+![截图](https://res2026.tiankonguse.com/images/2026/06/01/006.png)
 
 ```mermaid
 graph TD
@@ -365,6 +378,7 @@ graph TD
 
 
 好的 Agent 持久化系统，本质上是在**重新发明文件系统的某些古老约定**——append-only 文件、毫秒前缀的字典序、sidecar 元数据、侧链引用。这些约定在 Unix 下流传了几十年，到 Agent 时代依然好用。  
+
 
 Agent 的 Session 持久化，走的是同一条路。  
 

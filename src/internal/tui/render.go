@@ -113,10 +113,14 @@ func renderStatusBar(info SidebarInfo, width int) string {
 	parts := []string{
 		label("tokens", fmt.Sprintf("%d/%d(%.1f%%)", used, info.ContextLimit, pct)),
 		label("model", truncate(info.Model, 20)),
+		label("provider", info.ProviderID),
 		label("agent", truncate(info.AgentName, 16)),
 		label("skills", fmt.Sprintf("%d", len(info.Skills))),
 		label("tools", fmt.Sprintf("%d", len(info.Tools))),
 		label("mcp", fmt.Sprintf("%d", len(info.MCPServers))),
+	}
+	if info.Goal != "" {
+		parts = append(parts, label("goal", truncate(info.Goal, 24)))
 	}
 
 	_ = lipgloss.Width // keep import used

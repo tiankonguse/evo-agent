@@ -30,7 +30,7 @@ src/                       Go module root (module name: evo-agent)
       bash.go read_file.go edit_file.go write_file.go
       compact.go skill.go todo.go task.go
       memory.go            remember + consolidate_memory tools, GlobalMemory
-      plan.go              Persistent task plan tools (.tasks/)
+      plan.go              Persistent task plan tools (.evo-agent/tasks/)
       mcp.go               MCP transport (stdio / sse / streamableHttp)
     tui/                   Bubble Tea TUI (model, render, styles, sink)
     ui/                    Event types and output sinks
@@ -41,7 +41,7 @@ build/                     Compiled binary output
   memory/                  Persistent memories (per-type .md files + MEMORY.md index)
   mcp.json                 MCP server config
   tool-results/<id>.txt    Persisted large tool output
-.tasks/                    Persistent task plans
+.evo-agent/tasks/          Persistent task plans
   todo/<plan-name>/        Active plans (plan.md + task_N.json)
   done/<plan-name>/        Archived plans
 Agent.md                   Optional project guidance, injected into system prompt
@@ -60,7 +60,7 @@ tools.InitMCP()                            // load .evo-agent/mcp.json, spawn/co
   ↓
 tools.GlobalMemory.Init(projectDir)        // scan .evo-agent/memory/, parse frontmatter
   ↓
-tools.InitPlan(projectDir)                 // mkdir .tasks/todo .tasks/done
+tools.InitPlan(projectDir)                 // mkdir .evo-agent/tasks/todo .evo-agent/tasks/done
   ↓
 append memPrompt   = GlobalMemory.LoadPrompt()
 append            tools.MemoryGuidance     // const string about when/when-not to save
@@ -181,11 +181,11 @@ One-line summaries — for full input schemas (`BashInput`, `ReadFileInput`, etc
 | `edit_file` | edit_file.go | First-occurrence exact-string replacement |
 | `compact` | compact.go | Model-initiated full history summarization |
 | `load_skill` | skill.go | Load full skill body at runtime |
-| `todo` | todo.go | Session plan (max 12, exactly 1 in_progress) |
+| `todo_init` / `todo_create` / `todo_list` / `todo_get` / `todo_update` / `todo_complete` | todo.go | Session plan (max 12, exactly 1 in_progress) |
 | `task` | task.go | Spawn subagent with fresh context |
 | `remember` | memory.go | Spawn extraction subagent; reload memories after |
 | `consolidate_memory` | memory.go | Spawn consolidation subagent |
-| `plan_*` | plan.go | Persistent task management (see §7) |
+| `plan_create` / `plan_list` / `plan_task_create` / `plan_task_update` / `plan_task_list` / `plan_task_get` / `plan_complete` | plan.go | Persistent task plans (see §7) |
 | `mcp__<server>__<tool>` | mcp.go | Routed via `DispatchMCP` |
 
 ### Execute pipeline (`tools/executor.go`)
@@ -294,7 +294,7 @@ User: "/hello Alice"
 In agent goroutine (main.go):
   history = append(history,
     NewUserMessage(NewTextBlock(result.Prompt), NewTextBlock(result.Content)))
-  a.RunQueryDirect(&history, …)      // NOT RunQuery — message already built
+  a.RunQuery(&history, …)            // history already updated by caller
 ```
 
 ### Argument substitution precedence (`render.go`)
@@ -405,7 +405,7 @@ Durable, file-based task management that survives context compression and sessio
 ### Layout
 
 ```
-.tasks/
+.evo-agent/tasks/
   todo/
     2026-05-28-add-auth/
       plan.md             # requirements + approach + steps
@@ -455,13 +455,13 @@ Status: `pending` | `in_progress` | `completed` | `deleted`.
 
 ### Initialization
 
-`tools.InitPlan(cfg.ProjectDir)` creates `.tasks/todo/` and `.tasks/done/` if missing.
+`tools.InitPlan(cfg.ProjectDir)` creates `.evo-agent/tasks/todo/` and `.evo-agent/tasks/done/` if missing.
 
 ### Session-scoped vs persistent
 
 | Aspect | `todo` (session) | `plan_*` (persistent) |
 |--------|------------------|------------------------|
-| Storage | in-memory `GlobalTodo` | files in `.tasks/` |
+| Storage | in-memory `GlobalTodo` | files in `.evo-agent/tasks/` |
 | Lifetime | one session | survives restarts/compaction |
 | Max items | 12 | unlimited |
 | Status | adds `cancelled` | adds `deleted` |
@@ -591,7 +591,93 @@ For the exact `MCPServerConfig` / `MCPConfig` JSON schema, the `mcpClient` inter
 
 ## 11. Configuration (`internal/config/config.go`)
 
-`Config` carries `ModelID` (required), `APIKey`, `BaseURL`, and the dynamically-built `SystemMsg`. `config.LoadEnv()` reads `.env` files in two passes: first from the binary directory (e.g. `build/.env`), then from the cwd (overrides the first). `config.Load()` then reads env vars and returns a populated `*Config` — see [`API_REFERENCE.md` › *internal/config*](./API_REFERENCE.md) for the field table.
+`Config` carries `ModelID` (required), `APIKey`, `BaseURL`, the dynamically-built `SystemMsg`, and the LLM-provider switches `ProviderID` / `OpenAIAPIKey` / `OpenAIBaseURL`. `config.LoadEnv()` reads `.env` files in two passes: first from the binary directory (e.g. `build/.env`), then from the cwd (overrides the first). `config.Load()` then reads env vars and returns a populated `*Config` — see [`API_REFERENCE.md` › *internal/config*](./API_REFERENCE.md) for the field table.
+
+| Env var | Field | Required | Meaning |
+|---------|-------|----------|---------|
+| `MODEL_ID` | `ModelID` | yes | Passed through unchanged to the active provider (e.g. `claude-sonnet-4-5`, `gpt-4o-mini`). |
+| `PROVIDER_ID` | `ProviderID` | no (default `anthropic`) | `anthropic` → Anthropic Messages API. `openai` → OpenAI Chat Completions (and any compatible gateway). Anything else is rejected at startup. |
+| `ANTHROPIC_API_KEY` | `APIKey` | when `PROVIDER_ID=anthropic` and the endpoint enforces auth | Falls back to literal `"dummy"` so requests against permissive proxies still work. |
+| `ANTHROPIC_BASE_URL` | `BaseURL` | no | Custom Anthropic-compatible endpoint. Setting this also unsets `ANTHROPIC_AUTH_TOKEN` so the explicit API key wins. |
+| `OPENAI_API_KEY` | `OpenAIAPIKey` | when `PROVIDER_ID=openai` | Used as `Authorization: Bearer …`. Validated by `llm.New` — empty key fails fast. |
+| `OPENAI_BASE_URL` | `OpenAIBaseURL` | no (default `https://api.openai.com`) | Override for OpenAI-compatible providers (DeepSeek, Qwen, OpenRouter, Ollama, …). The adapter posts to `<base>/v1/chat/completions`. |
+
+---
+
+## 11.7 LLM Provider Abstraction (`internal/llm/`)
+
+Single boundary that lets the agent talk to either the Anthropic Messages API or the OpenAI Chat Completions API while keeping `anthropic.MessageNewParams` / `*anthropic.Message` as the canonical internal types. **Translation is runtime-only** — session JSONL on disk continues to be stored in anthropic shape regardless of the active provider.
+
+### Files
+
+| File | Role |
+|------|------|
+| `internal/llm/provider.go` | `Provider` interface, `Config` struct, `New(cfg) (Provider, error)` factory. |
+| `internal/llm/anthropic.go` | `anthropicProvider` — thin pass-through to the official `anthropic-sdk-go`; behaviour byte-identical to the pre-refactor flow. |
+| `internal/llm/openai.go` | `openaiProvider` — owns its own `*http.Client`, posts to `<base>/v1/chat/completions`, surfaces non-2xx bodies verbatim. |
+| `internal/llm/wire.go` | Private OpenAI request/response structs. |
+| `internal/llm/translate.go` | Pure functions `paramsToOpenAI`, `openAIToMessage`, `mapFinishReason`. |
+| `internal/llm/translate_test.go` | Table-driven mappings (both directions) including the critical `ToParam()` round-trip assertion. |
+| `internal/llm/openai_test.go` | `httptest.NewServer`-based end-to-end test. |
+
+### Provider interface
+
+```go
+type Provider interface {
+    SendMessage(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error)
+}
+```
+
+Returning `*anthropic.Message` (not a custom canonical type) means the four LLM call sites — `agent/loop.go:140`, `agent/subagent.go:69`, `agent/compact.go` (`SummarizeHistory`/`CompactHistory`), `goal/evaluator_llm.go` — keep using `resp.ToParam()`, `resp.Content` walking via `block.AsAny()`, and `resp.Usage` / `resp.StopReason` unchanged.
+
+### Synthesis trick (critical)
+
+The OpenAI adapter cannot field-fill `*anthropic.Message`: the SDK's `ContentBlockUnion.AsAny()` and `Message.ToParam()` both rely on the unexported `JSON.raw` field that only `apijson.UnmarshalRoot` populates. Field-filling silently produces zero-valued blocks and corrupts history within one round-trip.
+
+The adapter therefore **JSON-marshals an Anthropic-shaped `map[string]any` and feeds it to `(*anthropic.Message).UnmarshalJSON`**, letting the SDK rebuild every internal cache as if the bytes had come off the wire from the real API. Cost is one extra marshal/unmarshal per LLM turn. See `openAIToMessage` in `translate.go`.
+
+### Anthropic ↔ OpenAI translation table (high-level)
+
+| Anthropic (`MessageNewParams`) | OpenAI (`/v1/chat/completions`) |
+|---|---|
+| `Model` | `model` |
+| `MaxTokens` | `max_tokens` |
+| `System []TextBlockParam` | leading `{role:"system", content:<joined with \n\n>}` |
+| user msg with `OfText` | `{role:"user", content}` |
+| user msg with multiple `OfToolResult` | one `{role:"tool", tool_call_id, content}` per result, encounter order |
+| user msg with `OfToolResult` + trailing `OfText` (reminder) | tool messages first, then `{role:"user", content:<reminder>}` |
+| assistant `OfText` + `OfToolUse` | `{role:"assistant", content, tool_calls:[…]}` |
+| `OfThinking` / `OfRedactedThinking` | dropped silently |
+| `Tools[i].OfTool` | `{type:"function", function:{name, description, parameters:<input_schema>}}` |
+| non-`OfTool` tool variants (server tools, web search, code exec) | dropped silently |
+| `CacheControl` | dropped silently |
+| `Temperature`, `TopP`, `StopSequences` | passthrough |
+| `TopK`, `ToolChoice` (when unset) | dropped |
+
+| OpenAI response | Anthropic |
+|---|---|
+| `choices[0].message.content` | one `TextBlock` (when non-empty) |
+| `choices[0].message.refusal` | text block + `StopReasonRefusal` |
+| `choices[0].message.tool_calls[]` | one `ToolUseBlock` per call; `arguments` JSON-string parsed back into `Input` |
+| `choices[0].finish_reason` | `stop`→`end_turn`, `tool_calls`/`function_call`→`tool_use`, `length`→`max_tokens`, `content_filter`→`refusal`, else→`end_turn` |
+| `usage.prompt_tokens` / `completion_tokens` | `Usage.InputTokens` / `OutputTokens` |
+| empty content + no tool_calls | one empty text block (Anthropic shape requires non-empty `Content`) |
+
+For exact field rules and edge cases see `internal/llm/translate.go` and the table-driven tests in `translate_test.go` / `openai_test.go`.
+
+### Plumbing across the agent
+
+| Site | Before | After |
+|---|---|---|
+| `Agent` struct | `client *anthropic.Client` | `provider llm.Provider` |
+| `agent.New` signature | `New(client *anthropic.Client, …)` | `New(provider llm.Provider, …)` |
+| `agent/loop.go:140` | `a.client.Messages.New(…)` | `a.provider.SendMessage(…)` |
+| `agent/subagent.go:69` | same | same |
+| `agent/compact.go` (`SummarizeHistory`, `CompactHistory`) | first arg `*anthropic.Client` | first arg `llm.Provider` |
+| `goal/evaluator_llm.go` (`RunEvaluator`) | `client *anthropic.Client` | `provider llm.Provider` |
+| `main.go` | `client := anthropic.NewClient(BuildOptions(cfg)...)` | `provider, err := llm.New(llm.Config{…})` |
+
+`BuildOptions` was deleted; its body now lives inside `internal/llm/anthropic.go:newAnthropicProvider` verbatim.
 
 ---
 
@@ -607,6 +693,64 @@ Key points:
 - **Recovery rule**: `LoadForResume` finds the **last** `compact_boundary`, drops every user/assistant record before it, prepends a synthetic user message wrapping the boundary's `summary` in `<previous-conversation-summary>` tags, and surfaces each post-boundary `subagent_end.result` as a `<subagent-result>` user block.
 - **Entry points**: `evo-agent --resume <id>` (CLI), `/resume` (TUI dropdown picker, sorted newest first with token totals + first prompt), `/resume <id>` (inline, intercepted client-side). Exit always prints `Resume this session with: evo-agent --resume <id>`.
 - **Hooks**: `agent.LoopState.{Recorder,PromptID}` carry the recorder per turn; `agent.CompactHistory(... recorder, promptID)` writes the boundary; `tools.RegisterNamedSubagentRunner` lets the task tool's `description` label subagent files.
+
+---
+
+## 11.6 `/goal` Command (`internal/goal/`)
+
+Session-scoped completion condition that drives the loop to keep working until met. Inspired by Claude Code's `/goal` and Codex CLI's `set_goal()`.
+
+### Lifecycle
+
+```
+/goal <condition>         → goal.Global.Set(...) + tools.GlobalPlan.CreateForGoal(...) + driving turn
+/goal                     → emit EvGoal{status} (no LLM call)
+/goal clear|stop|off|...  → goal.Global.Clear() + AppendGoalCleared
+agent.Loop() (no tool_use)
+  └─ a.maybeContinueForGoal(state):
+       Snapshot active goal → goal.RunEvaluator(client, ModelID, ...)
+       Met=true  → goal.Global.Achieve() + AppendGoalAchieved + EvGoal{achieved} + return false
+       Met=false → append <goal-reminder> user msg + IncIter + EvGoal{continuing} + return true
+       Iter≥Max  → EvGoal{capped} + Clear + return false
+```
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `internal/goal/goal.go` | `Manager`, `State`, `Global` singleton (mirrors `tools/todo.go:GlobalTodo` pattern) |
+| `internal/goal/evaluator.go` | `ParseVerdict`, `BuildEvalRequest`, `ContinuationPrompt` (pure, unit-testable) |
+| `internal/goal/evaluator_llm.go` | `RunEvaluator(ctx, client, modelID, goalText, msgs) Verdict` — wraps `client.Messages.New` |
+| `internal/agent/goal.go` | `(a *Agent) maybeContinueForGoal(state) bool` — sole interception point |
+| `internal/agent/goalcmd.go` | `ParseGoalCmd`, `(a *Agent) HandleGoalCmd(...)` — shared client-side dispatch |
+| `internal/skills/builtin_commands/goal.md` | help-list manifest (dispatch is intercepted client-side; this exists for `/help`) |
+
+### Persistence
+
+- New record types in `session/record.go`: `TypeGoalSet`, `TypeGoalCleared`, `TypeGoalAchieved` carrying `GoalText`, `GoalReason`, `GoalPlanName`.
+- New recorder methods: `AppendGoalSet`, `AppendGoalCleared`, `AppendGoalAchieved`.
+- `LoadResult.Goal *RestoredGoal` populated by `loader.go`'s second-pass scan over **all** records (goal survives `compact_boundary`). On `--resume`, `main.go` calls `goal.Global.Set(text, planName)` so the iter counter resets.
+
+### System-prompt integration
+
+`prompt.GoalProvider` interface (mirrors `PlanProvider`); `goal.Global` satisfies it. `BuildSections` injects `<active-goal>...</active-goal>` after `buildPlanStatus()` so the model sees the goal every turn — no message-history pollution.
+
+### UI
+
+`ui.EvGoal` with `GoalKind ∈ {set, cleared, achieved, evaluating, continuing, capped, status}`. `TerminalSink` prints one-line status; TUI maintains `goalActive/goalText/goalIter` fields and renders a `◎ /goal active · iter N/30 · …` indicator above the input plus a `goal:<text>` chip in the status bar.
+
+### Plan integration
+
+`/goal <text>` auto-creates a persistent plan at `.evo-agent/tasks/todo/YYYY-MM-DD-<slug>/` via `tools.GlobalPlan.CreateForGoal(name, goalText, approach)`. The continuation prompt embeds `tools.GlobalPlan.StartupSummary()` so each evaluator-driven turn carries plan context.
+
+### Constants
+
+| Value | Where | Meaning |
+|-------|-------|---------|
+| `30` | `goal.DefaultMaxIter` | evaluator-driven continuation cap (aligned with `subagentMaxTurns`) |
+| `6` | `goal.EvalRecentTurns` | trailing messages excerpted for the evaluator |
+| `256` | `goal.evaluatorMaxTokens` | `MaxTokens` for the evaluator LLM call |
+| `2000` | `goal/evaluator.go` | per-block transcript truncation cap |
 
 ---
 
@@ -637,7 +781,7 @@ Key points:
 |-----------|------|-------|-------|
 | Config struct + base prompt | `internal/config/config.go` | 12-18, 41 | `SystemMsg` field; "You are a coding agent at …" |
 | Main initialization | `main.go` | 45-86 | Sequential injection into `cfg.SystemMsg` |
-| Slash-command dispatch in TUI | `main.go` | 114-144 | Two-block message → `RunQueryDirect` |
+| Slash-command dispatch in TUI | `main.go` | 114-144 | Two-block message → `RunQuery` |
 | Agent loop | `internal/agent/loop.go` | 88-165 | `Loop()`; system prompt at line 101 |
 | Tool result reminder injection | `internal/agent/loop.go` | 143-156 | Todo reminder as user text block |
 | Subagent | `internal/agent/subagent.go` | 19-83 | Combined prompt at line 24 |
@@ -670,7 +814,7 @@ Key points:
 → Edit `main.go:45-86`. Keep order in §2 in mind. To add a new dynamic section, follow the pattern `cfg.SystemMsg += "\n\n# …\n" + body`.
 
 ### Add a new persistent task
-→ Use `plan_create` then `plan_task_create`. Manual: `.tasks/todo/<plan>/task_N.json`.
+→ Use `plan_create` then `plan_task_create`. Manual: `.evo-agent/tasks/todo/<plan>/task_N.json`.
 
 ### Make a memory persist
 → Call `remember` tool (or user invokes `/remember`) — extraction subagent writes to `.evo-agent/memory/`. Re-load happens automatically; visible in **next** session's system prompt.
