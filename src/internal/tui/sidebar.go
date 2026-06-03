@@ -23,6 +23,12 @@ type SidebarInfo struct {
 	MCPServers []string // MCP server names only
 
 	Goal string // active /goal condition (truncated by sidebar renderer); "" when no goal
+
+	// Live counts of background tasks (running + finished). Updated via
+	// EvBgTasks events. Always rendered in the status bar (even at 0/0)
+	// so users notice the feature exists.
+	BgRunning   int
+	BgCompleted int
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

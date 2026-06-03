@@ -125,6 +125,13 @@ func (r *Repl) handleTurn(query string) {
 		return
 	}
 
+	// /bgtask | /bgtask <id> | /bgtask cancel <id> — pure client-side
+	// inspection / cancellation of background tasks. Never drives an LLM.
+	if act, arg := ParseBgTaskCmd(query); act != BgTaskCmdNotMatched {
+		r.handleBgTaskCmd(act, arg)
+		return
+	}
+
 	// /<skill-name> — slash dispatch into the skills/commands registry.
 	if result := skills.Dispatch(query); result.Found {
 		var newMsg anthropic.MessageParam

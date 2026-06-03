@@ -142,6 +142,22 @@ func (a *Agent) Loop(state *LoopState) bool {
 		// Apply micro-compaction + auto compact before LLM call
 		a.autoCompact(state)
 
+		// ── Background task notifications ─────────────────────────────────
+		// Drain completion events from goroutines started by bg_run and
+		// inject them as a synthetic <background-results> user message at
+		// the top of this turn, so the model sees outcomes without having
+		// to call bg_check itself. Pattern lifted from refs/ref.py.
+		if notifs := tools.GlobalBgTasks.DrainNotifications(); len(notifs) > 0 {
+			text := tools.FormatBgNotifications(notifs)
+			if text != "" {
+				bgMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(text))
+				state.Messages = append(state.Messages, bgMsg)
+				if state.Recorder != nil {
+					state.Recorder.AppendUser(state.PromptID, bgMsg)
+				}
+			}
+		}
+
 		systemPrompt := a.prompt.Build()
 
 		resp, err := a.provider.SendMessage(context.Background(), anthropic.MessageNewParams{

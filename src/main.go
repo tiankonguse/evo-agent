@@ -22,7 +22,7 @@ import (
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.16.0"
+	agentVersion = "0.17.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
 
@@ -98,6 +98,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: session persistence disabled: %v\n", err)
 	} else {
 		a.AttachSession(sess)
+		// Bind tools that need a session-scoped working dir (currently
+		// just bgtask) to the live session. SetSessionContext fills the
+		// gap left by the registry-style tool dispatch having no context
+		// argument — mirrors tools.SetConversationMessages.
+		tools.SetSessionContext(sess.Dir, sess.ID)
+		if err := tools.GlobalBgTasks.Init(sess.Dir, sess.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: bg tasks disabled: %v\n", err)
+		}
 	}
 
 	var initialHistory []anthropic.MessageParam

@@ -90,3 +90,14 @@ func PrintGoal(kind, text, reason, planName string, iter, maxIter int, setAtMs i
 		GoalSetAt:    setAtMs,
 	})
 }
+
+// EmitBgTasks broadcasts the latest background-task counts. The TUI status
+// bar consumes this; plain mode's TerminalSink ignores it (the model echoes
+// task lifecycle via tool results, so a separate stdout line would be noise).
+func EmitBgTasks(running, completed int) {
+	globalSink.Emit(Event{
+		Kind:        EvBgTasks,
+		BgRunning:   running,
+		BgCompleted: completed,
+	})
+}

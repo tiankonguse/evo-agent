@@ -186,6 +186,7 @@ One-line summaries — for full input schemas (`BashInput`, `ReadFileInput`, etc
 | `remember` | memory.go | Spawn extraction subagent; reload memories after |
 | `consolidate_memory` | memory.go | Spawn consolidation subagent |
 | `plan_create` / `plan_list` / `plan_task_create` / `plan_task_update` / `plan_task_list` / `plan_task_get` / `plan_complete` | plan.go | Persistent task plans (see §7) |
+| `bg_run` / `bg_check` / `bg_list` / `bg_cancel` | bgtask.go | Background tasks — long-running shell commands in their own goroutine + process group; results drained as `<background-results>` user message before each LLM call. See §7.5. |
 | `mcp__<server>__<tool>` | mcp.go | Routed via `DispatchMCP` |
 
 ### Execute pipeline (`tools/executor.go`)
@@ -467,6 +468,57 @@ Status: `pending` | `in_progress` | `completed` | `deleted`.
 | Status | adds `cancelled` | adds `deleted` |
 | Reminder | 3-round stale-check | none |
 | Sync to TUI | yes (`ui.EvTodo`) | no |
+
+---
+
+## 7.5 Background Tasks (`tools/bgtask.go`)
+
+Long-running shell commands run asynchronously in their own goroutine + process group. Pattern adapted from `refs/ref.py:BackgroundManager`. Storage scoped to the active session so `--resume` can list historical tasks; cancel and timeout move the task directory atomically from `todo/` to `done/` via `os.Rename`.
+
+### Layout
+
+```
+.evo-agent/sessions/<sessID>/runtime-tasks/
+  todo/<taskID>/                     # 8 hex chars
+    task.json                        # metadata
+    output.log                       # stdout + stderr (capped at 50 KB)
+  done/<taskID>/                     # completed | timeout | error | cancelled
+    task.json
+    output.log
+```
+
+`task.json` fields: `id`, `command`, `status`, `started_at_ms`, `finished_at_ms`, `exit_code`, `preview` (≤500 chars), `output_file` (relative to session dir).
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `bg_run` | Start a command in the background; returns `Background task <id> started: …` |
+| `bg_check` | Inspect one task by id (full JSON record); empty `task_id` lists all |
+| `bg_list` | Compact list of every known task |
+| `bg_cancel` | SIGKILL the process group, archive as `cancelled` |
+
+### Notification injection
+
+At the top of each agent-loop iteration (after `autoCompact`, before `SendMessage`), `tools.GlobalBgTasks.DrainNotifications()` pulls all completion events into a `<background-results>...</background-results>` user message. This lands in the conversation history (and the session transcript via `Recorder.AppendUser`) so the model sees outcomes without polling.
+
+### Slash command
+
+`/bgtask` is intercepted client-side in `agent/repl.go:handleTurn` (never drives an LLM turn):
+
+```
+/bgtask                  list every task
+/bgtask <id>             show one task's full record
+/bgtask cancel <id>      kill + archive a running task
+```
+
+### Initialization
+
+`tools.SetSessionContext(sess.Dir, sess.ID)` + `tools.GlobalBgTasks.Init(sess.Dir, sess.ID)` are called from `main.go` immediately after `a.AttachSession(sess)`. `Init` mkdirs `todo/`+`done/`, rehydrates known tasks from disk, and downgrades any leftover `running` records (left behind by a crashed run) to `error`.
+
+### Status bar
+
+The TUI status bar always shows `bg: N run / M done` (even at 0/0). Updates flow through `ui.EmitBgTasks(running, completed)` → `Event{Kind: EvBgTasks}` → TUI `model.handleAgentEvent` writes `m.info.BgRunning/BgCompleted`.
 
 ---
 
@@ -772,6 +824,10 @@ agent.Loop() (no tool_use)
 | `120 s` | (literal) | tools/bash.go | Bash timeout |
 | `50 000` chars | (literal) | tools/bash.go, read_file.go | Bash + read_file output cap |
 | `200000` | (literal) | — | Claude API context window (informational) |
+| `300 s` | `bgTaskTimeout` | tools/bgtask.go | Background task per-task timeout |
+| `50 000` chars | `bgTaskOutputCap` | tools/bgtask.go | Bytes of stdout+stderr captured into `output.log` |
+| `500` chars | `bgTaskPreviewCap` | tools/bgtask.go | Preview retained on the JSON record + status views |
+| `8` hex | derived from `bgTaskIDByteLen=4` | tools/bgtask.go | Background task ID length |
 
 ---
 

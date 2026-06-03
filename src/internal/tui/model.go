@@ -381,6 +381,12 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		// Store updated session plan; View() will re-render it live
 		m.planItems = e.PlanItems
 
+	case ui.EvBgTasks:
+		// Live background-task counts shown in the status bar. Always
+		// rendered (including 0/0), so users discover the feature.
+		m.info.BgRunning = e.BgRunning
+		m.info.BgCompleted = e.BgCompleted
+
 	case ui.EvGoal:
 		// Lifecycle dispatch — keeps the indicator's display state in
 		// sync with what the agent loop's goal logic decided.

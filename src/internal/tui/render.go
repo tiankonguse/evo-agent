@@ -118,6 +118,7 @@ func renderStatusBar(info SidebarInfo, width int) string {
 		label("skills", fmt.Sprintf("%d", len(info.Skills))),
 		label("tools", fmt.Sprintf("%d", len(info.Tools))),
 		label("mcp", fmt.Sprintf("%d", len(info.MCPServers))),
+		label("bg", fmt.Sprintf("%d run / %d done", info.BgRunning, info.BgCompleted)),
 	}
 	if info.Goal != "" {
 		parts = append(parts, label("goal", truncate(info.Goal, 24)))
