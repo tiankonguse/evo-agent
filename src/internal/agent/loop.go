@@ -71,7 +71,10 @@ func (a *Agent) Session() *session.Session {
 func (a *Agent) autoCompact(state *LoopState) {
 	state.Messages = MicroCompact(state.Messages, KEEP_RECENT_RESULTS)
 
-	contextSize := EstimateContextSize(state.Messages)
+	// Estimate against the post-filter view so we don't pessimistically
+	// trigger compaction over thinking blocks the LLM never actually
+	// sees (the loop strips them just before SendMessage).
+	contextSize := EstimateContextSize(FilterThinking(state.Messages))
 	if contextSize <= CONTEXT_LIMIT {
 		return
 	}
@@ -158,14 +161,39 @@ func (a *Agent) Loop(state *LoopState) bool {
 			}
 		}
 
+		// ── Scheduled task (cron) notifications ───────────────────────────
+		// Same pattern as background tasks: tasks scheduled via cron_create
+		// fire on a background goroutine; their prompts are queued and
+		// drained here so the model sees them as a synthetic
+		// <scheduled-task> user message at the top of the next turn.
+		if notifs := tools.GlobalCron.DrainNotifications(); len(notifs) > 0 {
+			text := tools.FormatCronNotifications(notifs)
+			if text != "" {
+				cronMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(text))
+				state.Messages = append(state.Messages, cronMsg)
+				if state.Recorder != nil {
+					state.Recorder.AppendUser(state.PromptID, cronMsg)
+				}
+			}
+		}
+
 		systemPrompt := a.prompt.Build()
+
+		// Strip thinking / redacted_thinking blocks from history before
+		// the LLM call. They're useful in the UI and the saved
+		// transcript, but re-feeding the assistant's prior thinking to
+		// itself on every turn just inflates context — the assistant's
+		// text + tool_use already capture the actionable conclusions.
+		// The OpenAI translation already drops thinking; this filter
+		// keeps the Anthropic path symmetric.
+		llmMessages := FilterThinking(state.Messages)
 
 		resp, err := a.provider.SendMessage(context.Background(), anthropic.MessageNewParams{
 			Model: anthropic.Model(a.cfg.ModelID),
 			System: []anthropic.TextBlockParam{
 				{Text: systemPrompt},
 			},
-			Messages:  state.Messages,
+			Messages:  llmMessages,
 			Tools:     tools.Tools(),
 			MaxTokens: 8000,
 		})

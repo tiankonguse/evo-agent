@@ -69,7 +69,7 @@ func (a *Agent) RunSubagent(systemPrompt string, messages []anthropic.MessagePar
 		resp, err := a.provider.SendMessage(context.Background(), anthropic.MessageNewParams{
 			Model:     anthropic.Model(a.cfg.ModelID),
 			System:    []anthropic.TextBlockParam{{Text: subSystem}},
-			Messages:  subMessages,
+			Messages:  FilterThinking(subMessages),
 			Tools:     childTools,
 			MaxTokens: 8000,
 		})

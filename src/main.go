@@ -22,7 +22,7 @@ import (
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.17.0"
+	agentVersion = "0.18.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
 
@@ -86,6 +86,13 @@ func main() {
 	builder.SetPlanGuidance(tools.PlanGuidance)
 	builder.SetPlanProvider(tools.GlobalPlan)
 
+	// Wire scheduled-tasks (cron) guidance — tells the model how to map
+	// natural language ("remind me at 3pm") to cron expressions and which
+	// tool to call (cron_create / cron_list / cron_delete). The tools are
+	// already in the registry; this prompt section is what makes
+	// natural-language CLI input route reliably to them.
+	builder.SetCronGuidance(tools.CronGuidance)
+
 	// Wire active /goal provider so the system prompt always reflects the
 	// current condition.
 	builder.SetGoalProvider(goal.Global)
@@ -107,6 +114,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Warning: bg tasks disabled: %v\n", err)
 		}
 	}
+
+	// Cron scheduler: ALWAYS start, even when persistence is disabled.
+	// Without a session dir, durable=true degrades to session-only
+	// (saveDurable is a no-op when rootDir is empty), but the ticker
+	// goroutine still fires session tasks — otherwise cron_create
+	// would silently never fire.
+	cronDir, cronID := "", ""
+	if sess != nil {
+		cronDir, cronID = sess.Dir, sess.ID
+	}
+	if err := tools.GlobalCron.Init(cronDir, cronID); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: scheduled tasks disabled: %v\n", err)
+	}
+	defer tools.GlobalCron.Stop()
 
 	var initialHistory []anthropic.MessageParam
 	if *resumeID != "" {

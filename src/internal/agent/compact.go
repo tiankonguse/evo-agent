@@ -9,13 +9,14 @@ import (
 	"evo-agent/internal/llm"
 	"evo-agent/internal/session"
 	"evo-agent/internal/ui"
+
 	"github.com/anthropics/anthropic-sdk-go"
 )
 
 const (
-	CONTEXT_LIMIT        = 50000 // Auto-compact threshold
-	KEEP_RECENT_RESULTS  = 3     // Keep this many recent tool results
-	maxConversationBytes = 80000 // Max conversation bytes passed to summarization LLM
+	CONTEXT_LIMIT        = 100000 // Auto-compact threshold
+	KEEP_RECENT_RESULTS  = 3      // Keep this many recent tool results
+	maxConversationBytes = 150000 // Max conversation bytes passed to summarization LLM
 )
 
 // EstimateContextSize returns the approximate context size in characters.
@@ -100,6 +101,12 @@ func MicroCompact(messages []anthropic.MessageParam, keepCount int) []anthropic.
 // adapter or the OpenAI adapter. The MessageNewParams shape stays
 // canonical across both backends.
 func SummarizeHistory(provider llm.Provider, model string, messages []anthropic.MessageParam) (string, error) {
+	// Strip thinking / redacted_thinking blocks before serialization —
+	// the summarizer doesn't need the raw chain-of-thought (it would
+	// just inflate the prompt without changing the summary's meaning).
+	// Same filter as the agent loop applies before every LLM call.
+	messages = FilterThinking(messages)
+
 	// Truncate conversation if too large
 	data, _ := json.Marshal(messages)
 	conversation := string(data)

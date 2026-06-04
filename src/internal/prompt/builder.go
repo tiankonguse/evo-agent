@@ -132,6 +132,7 @@ type Builder struct {
 	agentMdContent string // loaded once at startup
 	memoryGuidance string // constant guidance text
 	planGuidance   string // constant plan workflow guidance
+	cronGuidance   string // constant scheduled-tasks guidance
 }
 
 // NewBuilder creates a prompt builder with the given dependencies.
@@ -161,6 +162,13 @@ func (b *Builder) SetPlanProvider(p PlanProvider) {
 // SetPlanGuidance sets the session plan workflow guidance text.
 func (b *Builder) SetPlanGuidance(guidance string) {
 	b.planGuidance = guidance
+}
+
+// SetCronGuidance sets the scheduled-tasks (cron) workflow guidance text.
+// Wired by main.go to tools.CronGuidance so the model gets explicit
+// natural-language → cron-expression mapping rules in every turn.
+func (b *Builder) SetCronGuidance(guidance string) {
+	b.cronGuidance = guidance
 }
 
 // SetGoalProvider sets the active-goal provider so build*Status() can
@@ -195,6 +203,7 @@ func (b *Builder) BuildSections() []string {
 		b.buildSlashCommands(),    // Slash command introduction
 		b.buildMemoryGuidance(),   // When to use the remember tool
 		b.buildPlanGuidance(),     // When to use session plans
+		b.buildCronGuidance(),     // When/how to schedule cron tasks
 
 		// ── Boundary marker ─────────────────────────────────────────────
 		DynamicBoundary,
@@ -274,6 +283,10 @@ func (b *Builder) buildMemoryGuidance() string {
 
 func (b *Builder) buildPlanGuidance() string {
 	return b.planGuidance
+}
+
+func (b *Builder) buildCronGuidance() string {
+	return b.cronGuidance
 }
 
 func (b *Builder) buildPlanStatus() string {

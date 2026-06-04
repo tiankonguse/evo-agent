@@ -323,7 +323,15 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tea.Println(renderThinking(b, bw)+"\n"))
 
 	case ui.EvText:
-		cmds = append(cmds, tea.Println(textStyle.Width(bw).Render(e.Text)+"\n"))
+		// Assistant text is markdown by convention (see system prompt).
+		// Render it through glamour so headings/code-fences/lists/emphasis
+		// look right; fall back to plain styled text on render error so
+		// content is never lost.
+		rendered := renderMarkdown(e.Text, bw)
+		if rendered == "" {
+			rendered = textStyle.Width(bw).Render(e.Text)
+		}
+		cmds = append(cmds, tea.Println(rendered+"\n"))
 
 	case ui.EvToolCall:
 		// Store pending; will be printed when result arrives
@@ -363,7 +371,13 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 	case ui.EvTokens:
 		m.info.InputTokens = e.InputTokens
 		m.info.OutputTokens = e.OutputTokens
-		if e.Model != "" {
+		// Only adopt the API-reported model when it looks meaningful.
+		// Some OpenAI-compatible servers (Ollama, vLLM, gateway proxies)
+		// echo a placeholder like "default" or "" instead of the actual
+		// model alias the user configured — without this guard, the
+		// status bar would clobber the user's MODEL_ID with that
+		// placeholder on the first turn.
+		if isMeaningfulModelName(e.Model) {
 			m.info.Model = e.Model
 		}
 		if e.BlockSummary != "" {
@@ -611,11 +625,10 @@ func (m *Model) renderCompletion(w int) string {
 		return ""
 	}
 
-	maxShow := 8
-	items := m.completionItems
-	if len(items) > maxShow {
-		items = items[:maxShow]
-	}
+	const maxShow = 8
+	// Compute scroll window so the highlighted index stays visible.
+	// Window of size maxShow slides as completionIdx moves out of view.
+	startIdx, endIdx := scrollWindow(m.completionIdx, len(m.completionItems), maxShow)
 
 	innerW := w - 4
 	if innerW < 20 {
@@ -623,7 +636,13 @@ func (m *Model) renderCompletion(w int) string {
 	}
 
 	var lines []string
-	for i, name := range items {
+	// Top "… N more above" hint when window doesn't start at 0
+	if startIdx > 0 {
+		hint := fmt.Sprintf("  ↑ %d more", startIdx)
+		lines = append(lines, completionItemStyle.Width(innerW).Render(hint))
+	}
+	for i := startIdx; i < endIdx; i++ {
+		name := m.completionItems[i]
 		manifest := skills.GetManifest(name)
 		hint := ""
 		if manifest.ArgumentHint != "" {
@@ -645,14 +664,63 @@ func (m *Model) renderCompletion(w int) string {
 		}
 		lines = append(lines, line)
 	}
-
-	if len(m.completionItems) > maxShow {
-		more := fmt.Sprintf("  … %d more", len(m.completionItems)-maxShow)
-		lines = append(lines, completionItemStyle.Render(more))
+	// Bottom "… N more below" hint
+	if endIdx < len(m.completionItems) {
+		more := fmt.Sprintf("  ↓ %d more", len(m.completionItems)-endIdx)
+		lines = append(lines, completionItemStyle.Width(innerW).Render(more))
 	}
 
 	inner := strings.Join(lines, "\n")
 	return completionBorderStyle.Width(w - 2).Render(inner)
+}
+
+// scrollWindow returns the [start, end) index range to display so that
+// `cursor` is always visible inside a window of at most `maxShow` items
+// drawn from `total` items. When the cursor sits below the bottom of the
+// previous window, the window slides down so the cursor lands on the
+// last visible row; symmetric for upward movement. Used by both the
+// completion dropdown and the session picker so navigation past the
+// initial fixed slice no longer hides the highlight.
+func scrollWindow(cursor, total, maxShow int) (start, end int) {
+	if total <= maxShow {
+		return 0, total
+	}
+	// Anchor the window so cursor is always inside [start, end).
+	start = cursor - maxShow + 1
+	if start < 0 {
+		start = 0
+	}
+	end = start + maxShow
+	if end > total {
+		end = total
+		start = end - maxShow
+	}
+	return start, end
+}
+
+// isMeaningfulModelName guards the status bar against placeholder model
+// names returned by some OpenAI-compatible servers.
+//
+// Ollama, vLLM, and a number of LLM gateways (Cloudflare AI Gateway,
+// LiteLLM, etc.) echo a generic value like "default", "gpt", or "model"
+// in the response's `model` field instead of the actual alias the user
+// configured. Without this guard, the TUI would clobber the user's
+// MODEL_ID with that placeholder on the first turn — making the status
+// bar uselessly read "model:default" for the rest of the session.
+//
+// We accept anything that's non-empty AND not in the known placeholder
+// list. Real model names are diverse enough that an allow-list would
+// be wrong; a tiny deny-list of obvious placeholders is the conservative
+// choice. Add to it as new gateways crop up.
+func isMeaningfulModelName(name string) bool {
+	if name == "" {
+		return false
+	}
+	switch name {
+	case "default", "model", "unknown", "n/a":
+		return false
+	}
+	return true
 }
 
 // ── Spinner ───────────────────────────────────────────────────────────────────
@@ -700,12 +768,14 @@ func (m *Model) renderSessionPicker(w int) string {
 	}
 
 	const maxShow = 8
-	items := m.sessionPickerItems
-	if len(items) > maxShow {
-		items = items[:maxShow]
-	}
+	startIdx, endIdx := scrollWindow(m.sessionPickerIdx, len(m.sessionPickerItems), maxShow)
 
-	for i, e := range items {
+	if startIdx > 0 {
+		hint := completionItemStyle.Width(innerW).Render(fmt.Sprintf("  ↑ %d more", startIdx))
+		lines = append(lines, hint)
+	}
+	for i := startIdx; i < endIdx; i++ {
+		e := m.sessionPickerItems[i]
 		updated := e.Updated
 		if updated == 0 {
 			updated = session.ParseLeadingTimestampMs(e.ID)
@@ -733,9 +803,9 @@ func (m *Model) renderSessionPicker(w int) string {
 		lines = append(lines, line)
 	}
 
-	if len(m.sessionPickerItems) > maxShow {
-		more := fmt.Sprintf("  … %d more", len(m.sessionPickerItems)-maxShow)
-		lines = append(lines, completionItemStyle.Render(more))
+	if endIdx < len(m.sessionPickerItems) {
+		more := fmt.Sprintf("  ↓ %d more", len(m.sessionPickerItems)-endIdx)
+		lines = append(lines, completionItemStyle.Width(innerW).Render(more))
 	}
 
 	inner := strings.Join(lines, "\n")
