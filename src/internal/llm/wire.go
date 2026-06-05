@@ -17,6 +17,37 @@ type openaiRequest struct {
 	Stop        []string        `json:"stop,omitempty"`
 	Tools       []openaiTool    `json:"tools,omitempty"`
 	ToolChoice  any             `json:"tool_choice,omitempty"`
+
+	// ── Reasoning / thinking fields (provider-portable) ───────────────
+	// Different OpenAI-compatible providers use different field names
+	// for extended reasoning. We emit the three most common dialects
+	// together — servers that don't recognise a field ignore it.
+	//
+	//   - ReasoningEffort  : OpenAI o-series + most gateways ("low" /
+	//                        "medium" / "high" / "minimal")
+	//   - EnableThinking   : Qwen / DashScope / Bailian
+	//   - Reasoning        : OpenRouter ({"effort": "...", "max_tokens": N})
+	//
+	// Set OPENAI_THINKING=0 in the env to skip all three (useful for
+	// strict servers that 400 on unknown fields).
+	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	EnableThinking  *bool             `json:"enable_thinking,omitempty"`
+	Reasoning       *openaiReasoning  `json:"reasoning,omitempty"`
+	Thinking        *openaiThinking   `json:"thinking,omitempty"`
+}
+
+// openaiReasoning is the OpenRouter-style reasoning config block.
+type openaiReasoning struct {
+	Effort    string `json:"effort,omitempty"`
+	MaxTokens int64  `json:"max_tokens,omitempty"`
+}
+
+// openaiThinking mirrors Anthropic's thinking config shape. Some
+// compat-layer gateways accept this verbatim instead of OpenAI's
+// reasoning fields, so we emit it for breadth.
+type openaiThinking struct {
+	Type         string `json:"type,omitempty"` // "enabled"
+	BudgetTokens int64  `json:"budget_tokens,omitempty"`
 }
 
 // openaiMessage is one entry in the OpenAI request `messages` array.
@@ -83,6 +114,16 @@ type openaiChoiceMessage struct {
 	// model variants. We surface it as the text body so the model has
 	// something to look at rather than silently dropping it.
 	Refusal *string `json:"refusal"`
+
+	// ── Reasoning / thinking output fields ────────────────────────────
+	// Different providers surface chain-of-thought via different field
+	// names. We accept the two most common variants. If both are
+	// non-empty, ReasoningContent wins (DeepSeek's well-defined string
+	// shape). The OpenRouter variant `Reasoning` may be a string or an
+	// object; we use json.RawMessage and best-effort decode it in
+	// extractReasoningText (translate.go).
+	ReasoningContent *string         `json:"reasoning_content,omitempty"`
+	Reasoning        json.RawMessage `json:"reasoning,omitempty"`
 }
 
 type openaiUsage struct {

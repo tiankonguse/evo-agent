@@ -9,9 +9,11 @@ import (
 	"evo-agent/internal/llm"
 )
 
-// evaluatorMaxTokens caps the size of the evaluator response. The verdict is
-// just one short JSON line, so 256 is plenty.
-const evaluatorMaxTokens = 256
+// evaluatorMaxTokens caps the size of the evaluator response. The verdict
+// itself is just one short JSON line, but extended thinking is enabled in
+// the Anthropic provider for every call site, so we leave room for a
+// 1024-token thinking budget AND the verdict. Total = 2048.
+const evaluatorMaxTokens = 2048
 
 // RunEvaluator invokes the LLM as a yes/no judge for the active goal.
 //

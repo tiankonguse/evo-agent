@@ -119,6 +119,7 @@ func renderStatusBar(info SidebarInfo, width int) string {
 		label("tools", fmt.Sprintf("%d", len(info.Tools))),
 		label("mcp", fmt.Sprintf("%d", len(info.MCPServers))),
 		label("bg", fmt.Sprintf("%d run / %d done", info.BgRunning, info.BgCompleted)),
+		label("team", fmt.Sprintf("%d work / %d idle", info.TeamWorking, info.TeamIdle)),
 	}
 	if info.Goal != "" {
 		parts = append(parts, label("goal", truncate(info.Goal, 24)))
@@ -188,7 +189,86 @@ func renderTodoPanel(items []ui.TodoItem, topic string, width int) string {
 	return todoBorderStyle.Width(width - 2).Render(inner)
 }
 
-// buildProgressBar returns a simple ASCII progress bar of the given width.
+// renderTeamPanel renders the persistent teammate roster as a compact
+// bordered panel. Returns "" when no teammates exist so callers can skip
+// it cleanly. Members beyond the first 5 are folded into a `+ N more` line
+// to keep the live area readable.
+func renderTeamPanel(teamName string, members []ui.TeammateSnapshot, width int) string {
+	if len(members) == 0 {
+		return ""
+	}
+
+	innerW := width - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+
+	header := "▸ Team"
+	if teamName != "" {
+		header += ": " + teamName
+	}
+	var working, idle, shutdown int
+	for _, m := range members {
+		switch m.Status {
+		case "working":
+			working++
+		case "idle":
+			idle++
+		case "shutdown":
+			shutdown++
+		}
+	}
+	header += fmt.Sprintf("  (%d working, %d idle, %d shutdown)", working, idle, shutdown)
+
+	lines := []string{teamHeaderStyle.Render(header)}
+	const visibleCap = 5
+	now := time.Now().UnixMilli()
+	for i, m := range members {
+		if i >= visibleCap {
+			lines = append(lines, teamMetaStyle.Render(fmt.Sprintf(" + %d more", len(members)-visibleCap)))
+			break
+		}
+		marker := "·"
+		styler := teamIdleStyle
+		switch m.Status {
+		case "working":
+			marker = "▶"
+			styler = teamWorkingStyle
+		case "idle":
+			marker = "◯"
+			styler = teamIdleStyle
+		case "shutdown":
+			marker = "✖"
+			styler = teamShutdownStyle
+		}
+		ago := ""
+		if m.LastActiveMs > 0 && m.Status != "shutdown" {
+			ago = "  " + humanAgeMs(now-m.LastActiveMs)
+		}
+		body := fmt.Sprintf("%s (%s) — %s%s", m.Name, m.Role, m.Status, ago)
+		lines = append(lines, fmt.Sprintf(" %s %s", marker, styler.Render(body)))
+	}
+
+	inner := strings.Join(lines, "\n")
+	return teamBorderStyle.Width(width - 2).Render(inner)
+}
+
+// humanAgeMs renders a millisecond delta as a compact "Ns" / "Nm" / "Nh"
+// string. Used by the team panel to show last-active staleness.
+func humanAgeMs(ms int64) string {
+	if ms <= 0 {
+		return "just now"
+	}
+	sec := ms / 1000
+	switch {
+	case sec < 60:
+		return fmt.Sprintf("%ds", sec)
+	case sec < 3600:
+		return fmt.Sprintf("%dm", sec/60)
+	default:
+		return fmt.Sprintf("%dh", sec/3600)
+	}
+}
 func buildProgressBar(done, total, width int) string {
 	if width < 4 || total == 0 {
 		return ""

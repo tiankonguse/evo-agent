@@ -55,6 +55,10 @@ type Model struct {
 	// Persistent plan items (updated via EvPlan)
 	planItems []ui.PlanSnapshot
 
+	// Persistent team roster (updated via EvTeam)
+	teamMembers []ui.TeammateSnapshot
+	teamName    string
+
 	// Active /goal indicator (updated via EvGoal). When goalActive is
 	// false the indicator is hidden.
 	goalActive   bool
@@ -401,6 +405,27 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		m.info.BgRunning = e.BgRunning
 		m.info.BgCompleted = e.BgCompleted
 
+	case ui.EvTeam:
+		// Live team roster shown in a dedicated panel + status bar
+		// counters. Always rendered (including 0/0/0), so users discover
+		// the feature even with no spawned teammates yet.
+		m.teamName = e.TeamName
+		m.teamMembers = e.TeamMembers
+		var working, idle, shutdown int
+		for _, mem := range e.TeamMembers {
+			switch mem.Status {
+			case "working":
+				working++
+			case "idle":
+				idle++
+			case "shutdown":
+				shutdown++
+			}
+		}
+		m.info.TeamWorking = working
+		m.info.TeamIdle = idle
+		m.info.TeamShutdown = shutdown
+
 	case ui.EvGoal:
 		// Lifecycle dispatch — keeps the indicator's display state in
 		// sync with what the agent loop's goal logic decided.
@@ -481,6 +506,11 @@ func (m *Model) View() tea.View {
 
 	// Show session plan when active
 	if panel := renderPlanPanel(m.planItems, w); panel != "" {
+		parts = append(parts, panel)
+	}
+
+	// Show team panel when any teammate is registered
+	if panel := renderTeamPanel(m.teamName, m.teamMembers, w); panel != "" {
 		parts = append(parts, panel)
 	}
 

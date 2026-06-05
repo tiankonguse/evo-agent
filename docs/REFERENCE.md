@@ -44,6 +44,10 @@ build/                     Compiled binary output
 .evo-agent/tasks/          Persistent task plans
   todo/<plan-name>/        Active plans (plan.md + task_N.json)
   done/<plan-name>/        Archived plans
+.evo-agent/team/           Agent team (persistent teammates) — see §11.8
+  config.json              Members + statuses
+  inbox/<name>.jsonl       Per-teammate (and lead) inbox
+  history/<name>.jsonl     Per-teammate full message history (resume on wake)
 Agent.md                   Optional project guidance, injected into system prompt
 ```
 
@@ -187,6 +191,8 @@ One-line summaries — for full input schemas (`BashInput`, `ReadFileInput`, etc
 | `consolidate_memory` | memory.go | Spawn consolidation subagent |
 | `plan_create` / `plan_list` / `plan_task_create` / `plan_task_update` / `plan_task_list` / `plan_task_get` / `plan_complete` | plan.go | Persistent task plans (see §7) |
 | `bg_run` / `bg_check` / `bg_list` / `bg_cancel` | bgtask.go | Background tasks — long-running shell commands in their own goroutine + process group; results drained as `<background-results>` user message before each LLM call. See §7.5. |
+| `team_spawn` / `team_list` / `team_send_message` / `team_read_inbox` / `team_broadcast` / `team_shutdown` | team.go | Persistent named teammates (agent teams) with file-backed JSONL inboxes, per-teammate goroutines, and cross-restart history. See §11.8. |
+| `team_spawn` / `team_list` / `team_send_message` / `team_read_inbox` / `team_broadcast` / `team_shutdown` | team.go | Persistent named teammates (agent teams) with file-backed JSONL inboxes, per-teammate goroutines, and cross-restart history. See §11.8. |
 | `mcp__<server>__<tool>` | mcp.go | Routed via `DispatchMCP` |
 
 ### Execute pipeline (`tools/executor.go`)
@@ -803,6 +809,199 @@ agent.Loop() (no tool_use)
 | `6` | `goal.EvalRecentTurns` | trailing messages excerpted for the evaluator |
 | `256` | `goal.evaluatorMaxTokens` | `MaxTokens` for the evaluator LLM call |
 | `2000` | `goal/evaluator.go` | per-block transcript truncation cap |
+
+---
+
+## 11.8 Agent Teams (`internal/tools/team.go`)
+
+Persistent named teammates that live as long as you keep them spawned.
+Each teammate runs in its own goroutine with its own message history,
+its own inbox, and its own LLM tool-use loop. Communication happens
+through file-backed JSONL inboxes under `.evo-agent/team/`.
+
+Inspired by `refs/ref.py:s15` (Python prototype) and the Claude Code
+[Agent Teams docs](https://docs.claude.com/en/docs/claude-code/agent-teams).
+Distinct from one-shot subagents (`tools/task.go`):
+
+| | Subagent (`task`) | Teammate (`team_*`) |
+|---|---|---|
+| Lifetime | spawn → run → return → destroyed | spawn → work → idle → wake → … → shutdown |
+| Turn cap | 30 (subagentMaxTurns) | 50 per wake-burst, unlimited overall |
+| History | discarded after summary | persisted to `history/<name>.jsonl` |
+| Communication | none — only final summary returns | full JSONL inbox |
+| Survives restart | no | yes (config + history on disk) |
+
+### Storage layout
+
+```
+.evo-agent/team/
+  config.json                 ← registry: members + statuses (single team)
+  inbox/<name>.jsonl          ← append-only, drained on read
+  inbox/lead.jsonl            ← lead's own inbox; drained at top of agent loop
+  history/<name>.jsonl        ← teammate's full message history (resume on wake)
+```
+
+`config.json` shape (single team per project):
+
+```json
+{
+  "team_name": "default",
+  "members": [
+    {
+      "name": "alice",
+      "role": "coder",
+      "status": "idle",
+      "system_prompt": "...",
+      "spawned_at_ms": 1780000000000,
+      "last_active_ms": 1780000010000
+    }
+  ]
+}
+```
+
+### Goroutine lifecycle
+
+`runTeammate` is **one-shot per wake cycle**: it hydrates history, drains
+inbox, runs an LLM tool-use burst (`runWorkBurst`, ≤50 turns), and
+returns to idle (or shutdown). When the next inbox message arrives,
+`wakeLocked` checks `m.threads[name]`; if no live goroutine is
+registered, it starts a fresh one. This avoids the "stale channel"
+deadlock that bites long-lived sleep-loop designs.
+
+State transitions:
+
+| From | Trigger | To |
+|------|---------|-----|
+| `working` (mid-burst) | LLM stop_reason ≠ tool_use **and** inbox empty | `idle` |
+| `working` | shutdown_request inbox msg | `shutdown` (sends `shutdown_response`) |
+| `working` | `team_shutdown` / `Stop()` | `shutdown` |
+| `idle` | `SendMessage(name, …)` | `working` (new goroutine) |
+| `shutdown` | `team_spawn(same name)` | `working` (history reset) |
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `team_spawn` | Create or revive a named teammate; returns immediately. |
+| `team_list` | List members with role / status / last-active. |
+| `team_send_message` | Send a `{type, from, content}` envelope to a teammate's inbox (or to `lead`). |
+| `team_read_inbox` | Drain the lead's own inbox. Normally redundant — `agent.Loop` drains automatically. |
+| `team_broadcast` | Send to every active teammate (skipping shutdown). |
+| `team_shutdown` | Force-stop a teammate; preserves history. |
+
+Teammates run with `ToolsExcept("task", "team_spawn", "team_shutdown")`
+to prevent recursive spawning and protect lead authority.
+
+### Inbox envelope
+
+`InboxMessage` mirrors the ref.py shape:
+
+```json
+{
+  "type":      "message|broadcast|shutdown_request|shutdown_response|plan_approval|plan_approval_response",
+  "from":      "lead|<teammate>",
+  "content":   "free-form body",
+  "timestamp": 1780000000.123,
+  "extra":     {}
+}
+```
+
+### Lead-side integration
+
+`agent.Loop()` drains both queues at the top of every turn (after
+`bgtask` and `cron`):
+
+```go
+if msgs, _ := tools.GlobalTeam.ReadInbox("lead"); len(msgs) > 0 {
+    state.Messages = append(state.Messages, NewUserMessage(NewTextBlock(
+        FormatTeamInbox(msgs))))
+}
+if notifs := tools.GlobalTeam.DrainNotifications(); len(notifs) > 0 {
+    state.Messages = append(state.Messages, NewUserMessage(NewTextBlock(
+        FormatTeamNotifications(notifs))))
+}
+```
+
+Inbox messages land as `<team-inbox>…</team-inbox>` user blocks;
+status-change events (idle / shutdown / error) land as
+`<team-notifications>…</team-notifications>`. The model sees both
+without polling.
+
+### System-prompt section
+
+`tools.GlobalTeam` satisfies `prompt.TeamProvider`. `Builder.LoadPrompt()`
+returns a `# Active Team (<name>)` block listing every member with role,
+status, and "last active Ns ago". Wired in `main.go`:
+
+```go
+builder.SetTeamGuidance(tools.TeamGuidance)
+builder.SetTeamProvider(tools.GlobalTeam)
+```
+
+### `/team` slash command (client-side)
+
+`agent/teamcmd.go::ParseTeamCmd` is intercepted in `repl.go` before slash
+dispatch — never drives an LLM:
+
+```
+/team                       list every teammate
+/team list                  same
+/team shutdown <name>       gracefully stop a teammate
+/team inbox <name>          drain + dump one teammate's inbox (debug)
+```
+
+The builtin command file `internal/skills/builtin_commands/team.md`
+exists for `/help` listing only; dispatch is client-side.
+
+### TUI integration
+
+`ui.EvTeam` carries `TeamMembers []TeammateSnapshot` + `TeamName`.
+`tools/team.go` emits it on every spawn / idle / shutdown transition.
+The TUI:
+
+- Adds `team: N work / M idle` to the bottom status bar (`renderStatusBar`).
+- Renders a magenta-bordered `▸ Team: default` panel in the live area
+  (`renderTeamPanel`), capped at 5 visible rows with `+ N more` overflow.
+
+### Constants
+
+| Value | Identifier | Meaning |
+|-------|------------|---------|
+| `8` | `teamMaxMembers` | Cap on active (non-shutdown) members per team |
+| `50` | `teamMaxTurnsPerWake` | LLM round-trips a single wake-burst can issue before forcing idle |
+| `"lead"` | `teamLeadName` | Reserved inbox name for the main agent |
+| `"default"` | `teamDefaultName` | Single-team CLI (no team-of-teams support yet) |
+
+### Cycle-breaking pattern
+
+`tools/team.go` cannot import `agent` (cycle). Same callback pattern as
+`RegisterSubagentRunner`:
+
+```go
+type TeammateRunner func(ctx, systemPrompt, messages, tools) (*anthropic.Message, error)
+var teammateRunner TeammateRunner
+func RegisterTeammateRunner(fn TeammateRunner) { teammateRunner = fn }
+```
+
+`agent.New()` registers `(a *Agent).runTeammateTurn` (in
+`agent/team.go`) — a thin wrapper around `provider.SendMessage` with
+`FilterThinking` applied, mirroring the lead loop's request shape.
+
+### Limits / known gaps
+
+- Single team per project (matches ref.py); no nested teams or per-team
+  configs yet.
+- `shutdown_request` is enforced unconditionally — the "teammate may
+  reject and propose changes" flow from the Claude Code docs is not yet
+  implemented.
+- Teammates do **not** integrate with `session.Recorder`. Their history
+  is at `team/history/<name>.jsonl`, not in the lead's `messages.jsonl`,
+  so `--resume` of the lead session does not auto-restore live
+  teammates — the lead must `team_spawn` (revive) or `team_send_message`
+  (auto-wake from idle).
+- The `task` tool and `team_spawn` are deliberately stripped from a
+  teammate's tool set; intra-team coordination must go through the
+  message bus.
 
 ---
 

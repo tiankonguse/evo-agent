@@ -64,6 +64,13 @@ func newOpenAIProvider(cfg Config) (*openaiProvider, error) {
 // for the field-level mapping table and the rationale for the
 // JSON-marshal-then-UnmarshalJSON synthesis approach.
 //
+// Always-on thinking: withDefaultThinking populates params.Thinking with
+// a sensible budget when the caller didn't, then paramsToOpenAI emits
+// the multi-dialect reasoning fields (reasoning_effort, enable_thinking,
+// reasoning, thinking) so DeepSeek / Qwen / OpenRouter / o-series all
+// get a usable signal. OPENAI_THINKING=0 disables the OpenAI-side
+// emission for strict servers.
+//
 // Debug controls (env var OPENAI_DEBUG):
 //   - 1 / true / yes / on → dump full request + response to stderr;
 //     Authorization header is REDACTED so dumps are safe to paste.
@@ -72,6 +79,7 @@ func newOpenAIProvider(cfg Config) (*openaiProvider, error) {
 //     the right API key is being sent (e.g. shell env shadowing a
 //     value from .env). NEVER paste the resulting dump publicly.
 func (p *openaiProvider) SendMessage(ctx context.Context, params anthropic.MessageNewParams) (*anthropic.Message, error) {
+	params = withDefaultThinking(params)
 	req := paramsToOpenAI(params)
 	body, err := json.Marshal(req)
 	if err != nil {

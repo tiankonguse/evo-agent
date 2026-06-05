@@ -50,6 +50,7 @@ func New(provider llm.Provider, cfg *config.Config, pb *prompt.Builder) *Agent {
 	tools.RegisterNamedSubagentRunner(func(systemPrompt, agentName string, messages []anthropic.MessageParam) string {
 		return a.RunSubagent(systemPrompt, messages, agentName)
 	})
+	tools.RegisterTeammateRunner(a.runTeammateTurn)
 	return a
 }
 
@@ -173,6 +174,36 @@ func (a *Agent) Loop(state *LoopState) bool {
 				state.Messages = append(state.Messages, cronMsg)
 				if state.Recorder != nil {
 					state.Recorder.AppendUser(state.PromptID, cronMsg)
+				}
+			}
+		}
+
+		// ── Team inbox drain ──────────────────────────────────────────────
+		// Lead's own inbox.jsonl carries messages teammates wrote with
+		// team_send_message(to="lead", ...). Drain at the top of each
+		// turn so the model sees them as a <team-inbox> user message
+		// before deciding what to do next. Mirrors the bgtask pattern.
+		if msgs, err := tools.GlobalTeam.ReadInbox("lead"); err == nil && len(msgs) > 0 {
+			if text := tools.FormatTeamInbox(msgs); text != "" {
+				inboxMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(text))
+				state.Messages = append(state.Messages, inboxMsg)
+				if state.Recorder != nil {
+					state.Recorder.AppendUser(state.PromptID, inboxMsg)
+				}
+			}
+		}
+
+		// ── Team status notifications ─────────────────────────────────────
+		// Goroutine-pushed events (idle / shutdown / error) go through a
+		// separate queue so we can format them differently from raw inbox
+		// envelopes — they're meta-events about teammates, not messages
+		// from teammates. Surface as <team-notifications>.
+		if notifs := tools.GlobalTeam.DrainNotifications(); len(notifs) > 0 {
+			if text := tools.FormatTeamNotifications(notifs); text != "" {
+				notifMsg := anthropic.NewUserMessage(anthropic.NewTextBlock(text))
+				state.Messages = append(state.Messages, notifMsg)
+				if state.Recorder != nil {
+					state.Recorder.AppendUser(state.PromptID, notifMsg)
 				}
 			}
 		}

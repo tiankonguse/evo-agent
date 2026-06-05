@@ -66,6 +66,25 @@ func (TerminalSink) Emit(e Event) {
 			}
 			fmt.Printf("%s  %s %s%s\n", ColorMagenta, marker, line, ColorReset)
 		}
+	case EvTeam:
+		// Plain mode: print one compact roster line so the user sees who's
+		// up. The TUI renders a multi-line panel separately.
+		if len(e.TeamMembers) == 0 {
+			fmt.Printf("%s── TEAM (%s) ── (no members)%s\n", ColorMagenta, e.TeamName, ColorReset)
+			return
+		}
+		fmt.Printf("%s── TEAM (%s) ──%s\n", ColorMagenta, e.TeamName, ColorReset)
+		for _, m := range e.TeamMembers {
+			marker := map[string]string{
+				"working":  "▶",
+				"idle":     "◯",
+				"shutdown": "✖",
+			}[m.Status]
+			if marker == "" {
+				marker = "·"
+			}
+			fmt.Printf("%s  %s %s (%s) %s%s\n", ColorMagenta, marker, m.Name, m.Role, m.Status, ColorReset)
+		}
 	case EvGoal:
 		// Plain mode: one line per lifecycle event so the user can see what
 		// the loop's goal logic decided. The TUI renders a richer indicator

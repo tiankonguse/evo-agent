@@ -63,6 +63,15 @@ func main() {
 	// Initialize session plan/task system
 	tools.InitPlan(cfg.ProjectDir)
 
+	// Initialize persistent teammate (agent team) system. Failure here is
+	// non-fatal — the team_* tools will return errors but the rest of the
+	// agent works normally. Stop() is deferred so live teammate goroutines
+	// flush their final state on shutdown.
+	if err := tools.GlobalTeam.Init(cfg.ProjectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: team mode disabled: %v\n", err)
+	}
+	defer tools.GlobalTeam.Stop()
+
 	// Print active session plan status at startup
 	if summary := tools.GlobalPlan.StartupSummary(); summary != "" {
 		fmt.Println(summary)
@@ -85,6 +94,12 @@ func main() {
 	// Set session plan guidance and provider
 	builder.SetPlanGuidance(tools.PlanGuidance)
 	builder.SetPlanProvider(tools.GlobalPlan)
+
+	// Wire team mode: the system prompt always reflects the live roster,
+	// and the model gets workflow guidance for when persistent teammates
+	// beat one-shot subagents.
+	builder.SetTeamGuidance(tools.TeamGuidance)
+	builder.SetTeamProvider(tools.GlobalTeam)
 
 	// Wire scheduled-tasks (cron) guidance — tells the model how to map
 	// natural language ("remind me at 3pm") to cron expressions and which

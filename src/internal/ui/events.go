@@ -15,6 +15,7 @@ const (
 	EvPlan                       // Persistent plan updated
 	EvGoal                       // Active goal status changed (set/cleared/achieved/evaluating/continuing/capped)
 	EvBgTasks                    // Background-task counts changed (running/completed)
+	EvTeam                       // Persistent teammate roster / status changed
 )
 
 // TodoItem is one entry in the memory plan.
@@ -37,6 +38,15 @@ type PlanTaskItem struct {
 type PlanSnapshot struct {
 	Name  string
 	Tasks []PlanTaskItem
+}
+
+// TeammateSnapshot is the TUI-visible summary of one persistent teammate.
+// Mirrors the on-disk teammate record stripped to fields the UI needs.
+type TeammateSnapshot struct {
+	Name         string
+	Role         string
+	Status       string // "working" | "idle" | "shutdown"
+	LastActiveMs int64  // Unix ms; 0 = never active
 }
 
 // Event is a union struct carrying data for any EventKind.
@@ -84,4 +94,10 @@ type Event struct {
 	// finishes / is cancelled, so the TUI status bar can show live counts.
 	BgRunning   int
 	BgCompleted int
+
+	// EvTeam — populated by tools/team.go whenever a teammate spawns, goes
+	// idle, returns to work, or is shut down. The TUI consumes the
+	// snapshot to redraw the team panel and status bar.
+	TeamName    string
+	TeamMembers []TeammateSnapshot
 }

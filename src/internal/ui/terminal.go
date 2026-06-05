@@ -101,3 +101,15 @@ func EmitBgTasks(running, completed int) {
 		BgCompleted: completed,
 	})
 }
+
+// EmitTeam broadcasts the latest team roster + per-member status. Used by
+// tools/team.go on every spawn / idle / shutdown / wake transition. The
+// TUI redraws the team panel and status counts; plain mode prints a short
+// summary line per non-trivial change (handled in TerminalSink).
+func EmitTeam(name string, members []TeammateSnapshot) {
+	globalSink.Emit(Event{
+		Kind:        EvTeam,
+		TeamName:    name,
+		TeamMembers: members,
+	})
+}

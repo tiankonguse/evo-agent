@@ -3,9 +3,11 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
 // paramsToOpenAI translates an anthropic.MessageNewParams into the
@@ -13,7 +15,7 @@ import (
 //
 // What is dropped on purpose (scope-decision: OpenAI Chat Completions
 // only, no streaming, no thinking surface):
-//   - Thinking / RedactedThinking blocks (Anthropic-only)
+//   - RedactedThinking blocks (Anthropic-only)
 //   - CacheControl breakpoints (Anthropic-only)
 //   - All non-text tool-result content variants (image, search_result,
 //     document, tool_reference) — we only forward the joined text body
@@ -22,6 +24,11 @@ import (
 //   - All non-OfTool ToolUnionParam variants (server tools, code
 //     execution, web search) — they have no OpenAI equivalent
 //   - TopK (no OpenAI counterpart on chat completions)
+//
+// Translated:
+//   - Thinking config (params.Thinking.OfEnabled) → reasoning_effort +
+//     enable_thinking + reasoning + thinking fields (multi-dialect; see
+//     wire.go). Skipped entirely when OPENAI_THINKING=0.
 //
 // The function is intentionally pure so it can be unit-tested without a
 // network round-trip. See translate_test.go for the table-driven suite
@@ -41,6 +48,14 @@ func paramsToOpenAI(params anthropic.MessageNewParams) openaiRequest {
 	}
 	if len(params.StopSequences) > 0 {
 		out.Stop = append([]string(nil), params.StopSequences...)
+	}
+
+	// Reasoning / thinking fields (multi-dialect). Read the canonical
+	// Thinking config from the params; emit OpenAI / Qwen / OpenRouter
+	// variants together. OPENAI_THINKING=0 short-circuits this for
+	// strict servers that 400 on unknown fields.
+	if shouldEmitOpenAIThinking() {
+		applyThinkingToOpenAI(&out, params)
 	}
 
 	// Leading system message: concatenate every TextBlockParam so the
@@ -68,6 +83,60 @@ func paramsToOpenAI(params anthropic.MessageNewParams) openaiRequest {
 	}
 
 	return out
+}
+
+// shouldEmitOpenAIThinking returns false only when OPENAI_THINKING is
+// explicitly disabled. Default is on so the always-on thinking promise
+// holds for OpenAI-compatible providers without per-deployment config.
+func shouldEmitOpenAIThinking() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("OPENAI_THINKING"))) {
+	case "0", "false", "no", "off", "disabled":
+		return false
+	}
+	return true
+}
+
+// openaiReasoningEffort lets the user override the effort label sent to
+// OpenAI-compatible providers. Default "medium" is a safe middle ground
+// for budget≈2048. Explicit override wins over the budget-derived map.
+func openaiReasoningEffort(budget int64) string {
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("OPENAI_REASONING_EFFORT"))); v != "" {
+		switch v {
+		case "minimal", "low", "medium", "high":
+			return v
+		}
+	}
+	switch {
+	case budget <= 0:
+		return "medium"
+	case budget < 2048:
+		return "low"
+	case budget < 4096:
+		return "medium"
+	default:
+		return "high"
+	}
+}
+
+// applyThinkingToOpenAI mutates `out` in place to add the multi-dialect
+// reasoning fields. Reads from params.Thinking — when the caller hasn't
+// enabled thinking we still emit a sensible "medium" effort so OpenAI's
+// reasoning models (o1/o3/…) think by default. Anthropic's withDefault
+// Thinking sets params.Thinking when MaxTokens is large enough; for the
+// OpenAI path we mirror that intent and always emit reasoning fields.
+func applyThinkingToOpenAI(out *openaiRequest, params anthropic.MessageNewParams) {
+	var budget int64
+	if !param.IsOmitted(params.Thinking.OfEnabled) {
+		budget = params.Thinking.OfEnabled.BudgetTokens
+	}
+	effort := openaiReasoningEffort(budget)
+	out.ReasoningEffort = effort
+	yes := true
+	out.EnableThinking = &yes
+	out.Reasoning = &openaiReasoning{Effort: effort, MaxTokens: budget}
+	if budget > 0 {
+		out.Thinking = &openaiThinking{Type: "enabled", BudgetTokens: budget}
+	}
 }
 
 // joinSystemText concatenates the Text fields of a System slice with
@@ -249,6 +318,22 @@ func openAIToMessage(resp *openaiResponse) (*anthropic.Message, error) {
 	choice := resp.Choices[0]
 
 	content := []map[string]any{}
+
+	// Reasoning / thinking content (DeepSeek's reasoning_content +
+	// OpenRouter's reasoning) is surfaced as an Anthropic thinking block
+	// so the TUI's EvThinking renderer + agent.FilterThinking strip both
+	// work uniformly across providers. The signature is empty (we have
+	// no real Anthropic signature for OpenAI-derived thinking, and
+	// FilterThinking strips the block before re-feeding to the LLM so
+	// the missing signature never causes a wire-level rejection).
+	if think := extractReasoningText(choice.Message); think != "" {
+		content = append(content, map[string]any{
+			"type":      "thinking",
+			"thinking":  think,
+			"signature": "",
+		})
+	}
+
 	if choice.Message.Content != nil && *choice.Message.Content != "" {
 		content = append(content, map[string]any{
 			"type": "text",
@@ -320,4 +405,41 @@ func mapFinishReason(r string) anthropic.StopReason {
 	default:
 		return anthropic.StopReasonEndTurn
 	}
+}
+
+// extractReasoningText pulls chain-of-thought text out of an OpenAI
+// response message. Two dialects are accepted:
+//
+//   - DeepSeek's `reasoning_content` (string) — preferred when present
+//   - OpenRouter's `reasoning` (string OR object {"text":"…"} OR
+//     {"effort":"…","content":"…"}) — best-effort decode
+//
+// Returns "" when neither field carries usable text. The result is
+// embedded as an Anthropic thinking block so the TUI / FilterThinking
+// pipeline treats it identically to native Anthropic thinking.
+func extractReasoningText(msg openaiChoiceMessage) string {
+	if msg.ReasoningContent != nil && *msg.ReasoningContent != "" {
+		return *msg.ReasoningContent
+	}
+	if len(msg.Reasoning) == 0 {
+		return ""
+	}
+	// Try string first — OpenRouter sometimes returns a plain string.
+	var s string
+	if err := json.Unmarshal(msg.Reasoning, &s); err == nil && s != "" {
+		return s
+	}
+	// Fall back to object with a text-bearing field.
+	var obj map[string]any
+	if err := json.Unmarshal(msg.Reasoning, &obj); err != nil {
+		return ""
+	}
+	for _, k := range []string{"text", "content", "reasoning", "thinking"} {
+		if v, ok := obj[k]; ok {
+			if vs, ok := v.(string); ok && vs != "" {
+				return vs
+			}
+		}
+	}
+	return ""
 }

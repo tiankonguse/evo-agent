@@ -132,6 +132,13 @@ func (r *Repl) handleTurn(query string) {
 		return
 	}
 
+	// /team | /team list | /team shutdown <name> | /team inbox <name>
+	// — pure client-side teammate management. Never drives an LLM.
+	if act, arg := ParseTeamCmd(query); act != TeamCmdNotMatched {
+		r.handleTeamCmd(act, arg)
+		return
+	}
+
 	// /<skill-name> — slash dispatch into the skills/commands registry.
 	if result := skills.Dispatch(query); result.Found {
 		var newMsg anthropic.MessageParam

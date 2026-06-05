@@ -113,6 +113,23 @@ var (
 			Foreground(lipgloss.Color("#1f6feb")).
 			Bold(true)
 
+	// ── Team panel ───────────────────────────────────────────────────────────
+	// Magenta/purple to differentiate from todo (subtle gray) and plan (blue).
+	teamBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#bc8cff")).
+			PaddingLeft(1).
+			PaddingRight(1)
+
+	teamHeaderStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#bc8cff")).
+			Bold(true)
+
+	teamWorkingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#d29922")).Bold(true)
+	teamIdleStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#3fb950"))
+	teamShutdownStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681")).Italic(true)
+	teamMetaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681"))
+
 	// ── Goal indicator ───────────────────────────────────────────────────────
 	// One-line surface in the live bottom area showing /goal active state.
 	// Yellow/amber matches Claude Code's `◎ /goal active` colour family.

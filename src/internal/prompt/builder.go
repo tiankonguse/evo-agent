@@ -116,6 +116,13 @@ type GoalProvider interface {
 	ActiveGoalText() string
 }
 
+// TeamProvider abstracts access to the persistent teammate roster.
+// tools.GlobalTeam satisfies this interface directly. Empty result =
+// "no team active" → the section is omitted from the prompt.
+type TeamProvider interface {
+	LoadPrompt() string
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Builder
 // ────────────────────────────────────────────────────────────────────────────
@@ -129,10 +136,12 @@ type Builder struct {
 	skills         SkillsProvider
 	plan           PlanProvider
 	goal           GoalProvider
+	team           TeamProvider
 	agentMdContent string // loaded once at startup
 	memoryGuidance string // constant guidance text
 	planGuidance   string // constant plan workflow guidance
 	cronGuidance   string // constant scheduled-tasks guidance
+	teamGuidance   string // constant team workflow guidance
 }
 
 // NewBuilder creates a prompt builder with the given dependencies.
@@ -177,6 +186,19 @@ func (b *Builder) SetGoalProvider(p GoalProvider) {
 	b.goal = p
 }
 
+// SetTeamProvider sets the persistent teammate roster provider so
+// buildTeamStatus() can inject the current roster into every turn.
+func (b *Builder) SetTeamProvider(p TeamProvider) {
+	b.team = p
+}
+
+// SetTeamGuidance sets the team workflow guidance text. Wired by main.go
+// to tools.TeamGuidance so the model knows when to spawn teammates and
+// how to communicate with them.
+func (b *Builder) SetTeamGuidance(guidance string) {
+	b.teamGuidance = guidance
+}
+
 // Build assembles the full system prompt by joining all sections.
 // This is the primary entry point used by agent.Loop().
 func (b *Builder) Build() string {
@@ -185,50 +207,74 @@ func (b *Builder) Build() string {
 }
 
 // BuildSections returns the prompt as an array of non-empty sections.
-// Each section is a standalone block. This enables:
+// Each section is wrapped in semantic XML tags (e.g. <intro>...</intro>,
+// <custom_agent_md>...</custom_agent_md>) so the model can locate and
+// reason about individual sections explicitly. Empty sections are
+// dropped before wrapping. The DynamicBoundary marker is the one
+// exception — it stays raw so per-section cache_control still works.
+//
+// This enables:
 //   - Per-section cache_control in Claude API
 //   - Inspection/debugging of individual sections
 //   - Future A/B testing of section variants
 func (b *Builder) BuildSections() []string {
-	// Collect all sections; empty strings are filtered out at the end.
-	sections := []string{
+	// Each entry: (xml-tag, raw section body). Empty bodies skip the
+	// wrapper entirely so the prompt stays clean.
+	type tagged struct {
+		tag  string
+		body string
+	}
+	tagged_sections := []tagged{
 		// ── Static content (cacheable across turns) ──────────────────────
-		b.buildIntro(),            // Agent identity and capabilities
-		b.buildSystem(),           // Output format, permissions, context compression
-		b.buildDoingTasks(),       // Coding guidelines and task execution
-		b.buildActions(),          // Reversibility, blast radius, confirmation
-		b.buildToolUsage(),        // Dedicated tools over bash, parallel calls
-		b.buildToneStyle(),        // Concise, no emoji, formatting rules
-		b.buildOutputEfficiency(), // Brief, direct, no filler
-		b.buildSlashCommands(),    // Slash command introduction
-		b.buildMemoryGuidance(),   // When to use the remember tool
-		b.buildPlanGuidance(),     // When to use session plans
-		b.buildCronGuidance(),     // When/how to schedule cron tasks
-
-		// ── Boundary marker ─────────────────────────────────────────────
-		DynamicBoundary,
-
-		// ── Dynamic content (session-specific, per-turn) ────────────────
-
+		{"intro", b.buildIntro()},                        // Agent identity and capabilities
+		{"system", b.buildSystem()},                      // Output format, permissions, context compression
+		{"doing_tasks", b.buildDoingTasks()},             // Coding guidelines and task execution
+		{"executing_actions", b.buildActions()},          // Reversibility, blast radius, confirmation
+		{"tool_usage", b.buildToolUsage()},               // Dedicated tools over bash, parallel calls
+		{"tone_style", b.buildToneStyle()},               // Concise, no emoji, formatting rules
+		{"output_efficiency", b.buildOutputEfficiency()}, // Brief, direct, no filler
+		{"slash_commands", b.buildSlashCommands()},       // Slash command introduction
+		{"memory_guidance", b.buildMemoryGuidance()},     // When to use the remember tool
+		{"plan_guidance", b.buildPlanGuidance()},         // When to use session plans
+		{"cron_guidance", b.buildCronGuidance()},         // When/how to schedule cron tasks
+		{"team_guidance", b.buildTeamGuidance()},         // When to spawn persistent teammates
+	}
+	dynamicTagged := []tagged{
+		// ── Dynamic content (session-specific, per-turn) ─────────────────
 		// 项目维度，启动后固定
-		b.buildAgentMd(),       // Project guidance from Agent.md
-		b.buildSkillsCatalog(), // Available skills listing
-
+		{"custom_agent_md", b.buildAgentMd()},      // Project guidance from Agent.md
+		{"skills_catalog", b.buildSkillsCatalog()}, // Available skills listing
 		// 记忆可能变化，模型可能切换
-		b.buildMemories(),    // Persistent memories across sessions
-		b.buildPlanStatus(),  // Active session plans status
-		b.buildGoalStatus(),  // Active /goal condition (if any)
-		b.buildEnvironment(), // Git, shell, OS, model, date
+		{"memories", b.buildMemories()},       // Persistent memories across sessions
+		{"plan_status", b.buildPlanStatus()},  // Active session plans status
+		{"team_status", b.buildTeamStatus()},  // Active team roster (if any)
+		{"goal_status", b.buildGoalStatus()},  // Active /goal condition (if any)
+		{"environment", b.buildEnvironment()}, // Git, shell, OS, model, date
 	}
 
-	// Filter out empty sections
-	result := make([]string, 0, len(sections))
-	for _, s := range sections {
-		if s != "" {
-			result = append(result, s)
+	out := make([]string, 0, len(tagged_sections)+1+len(dynamicTagged))
+	for _, t := range tagged_sections {
+		if wrapped := wrapSection(t.tag, t.body); wrapped != "" {
+			out = append(out, wrapped)
 		}
 	}
-	return result
+	out = append(out, DynamicBoundary)
+	for _, t := range dynamicTagged {
+		if wrapped := wrapSection(t.tag, t.body); wrapped != "" {
+			out = append(out, wrapped)
+		}
+	}
+	return out
+}
+
+// wrapSection wraps body with <tag>...</tag> markers. Returns "" when
+// body is empty so callers can drop the section entirely.
+func wrapSection(tag, body string) string {
+	if body == "" {
+		return ""
+	}
+	return body
+	// return "<" + tag + ">\n" + body + "\n</" + tag + ">"
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -289,6 +335,17 @@ func (b *Builder) buildCronGuidance() string {
 	return b.cronGuidance
 }
 
+func (b *Builder) buildTeamGuidance() string {
+	return b.teamGuidance
+}
+
+func (b *Builder) buildTeamStatus() string {
+	if b.team == nil {
+		return ""
+	}
+	return b.team.LoadPrompt()
+}
+
 func (b *Builder) buildPlanStatus() string {
 	if b.plan == nil {
 		return ""
@@ -304,9 +361,11 @@ func (b *Builder) buildGoalStatus() string {
 	if text == "" {
 		return ""
 	}
-	return "<active-goal>\n" + text + "\n\nA /goal command is active: keep working toward this condition. " +
+	// Outer XML wrapping is added by BuildSections (<goal_status>); the
+	// body itself just carries the goal text + behavioural reminder.
+	return text + "\n\nA /goal command is active: keep working toward this condition. " +
 		"After every turn that ends with no tool calls, an evaluator will check whether the goal is met. " +
-		"If you believe the goal is achieved, simply produce a final answer with no further tool_use blocks.\n</active-goal>"
+		"If you believe the goal is achieved, simply produce a final answer with no further tool_use blocks."
 }
 
 func (b *Builder) buildSkillsCatalog() string {

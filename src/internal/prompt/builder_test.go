@@ -340,3 +340,69 @@ func TestBuildSections_ReturnsArray(t *testing.T) {
 		t.Error("BuildSections() should contain DynamicBoundary as a standalone element")
 	}
 }
+
+// TestBuildSections_XMLWrapping verifies that every non-boundary section
+// returned by BuildSections is wrapped in <tag>...</tag> markers and that
+// each opening tag has a matching close. Pin a few specific tag names so
+// future renames don't silently drift away from the docs.
+func TestBuildSections_XMLWrapping(t *testing.T) {
+	cfg := testCfg("/tmp", "m")
+	mem := &mockMemory{prompt: "MEM_BODY"}
+	sk := &mockSkills{catalog: "- skill: x", slashNames: []string{"foo"}}
+	b := NewBuilder(cfg, mem, sk)
+	b.SetAgentMd("AGENT_MD_BODY")
+
+	sections := b.BuildSections()
+
+	// Every section that isn't the boundary marker must be wrapped.
+	for i, s := range sections {
+		if s == DynamicBoundary {
+			continue
+		}
+		if !strings.HasPrefix(s, "<") {
+			t.Errorf("section %d must start with '<', got: %q", i, firstN(s, 40))
+		}
+		if !strings.HasSuffix(s, ">") {
+			t.Errorf("section %d must end with '>', got: %q", i, lastN(s, 40))
+		}
+	}
+
+	// Joined output should contain expected named tags. Pin the user-given
+	// example (custom_agent_md) plus a few representatives from each tier.
+	joined := b.Build()
+	wantTags := []string{
+		"<intro>", "</intro>",
+		"<doing_tasks>", "</doing_tasks>",
+		"<custom_agent_md>", "</custom_agent_md>",
+		"<memories>", "</memories>",
+		"<skills_catalog>", "</skills_catalog>",
+		"<environment>", "</environment>",
+	}
+	for _, w := range wantTags {
+		if !strings.Contains(joined, w) {
+			t.Errorf("Build() should contain tag %q", w)
+		}
+	}
+
+	// Body content should still be present inside the wrapping.
+	if !strings.Contains(joined, "AGENT_MD_BODY") {
+		t.Error("Build() lost agent.md body inside <custom_agent_md>")
+	}
+	if !strings.Contains(joined, "MEM_BODY") {
+		t.Error("Build() lost memory body inside <memories>")
+	}
+}
+
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func lastN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}

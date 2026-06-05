@@ -29,6 +29,12 @@ type SidebarInfo struct {
 	// so users notice the feature exists.
 	BgRunning   int
 	BgCompleted int
+
+	// Live team counts derived from EvTeam events. Always rendered (even
+	// at 0/0) so users see persistent teammates exist as a feature.
+	TeamWorking  int
+	TeamIdle     int
+	TeamShutdown int
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
