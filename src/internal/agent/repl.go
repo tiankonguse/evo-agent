@@ -139,6 +139,16 @@ func (r *Repl) handleTurn(query string) {
 		return
 	}
 
+	// /tools | /tools list | /tools disable|enable <name> | /tools reset
+	// — pure client-side tool roster management. Never drives an LLM.
+	// (The TUI also has an interactive picker for the no-arg form, which
+	// is implemented inside the tui package and never reaches this Repl.
+	// The text forms here cover the plain REPL and the TUI's text path.)
+	if act, arg := ParseToolsCmd(query); act != ToolsCmdNotMatched {
+		r.handleToolsCmd(act, arg)
+		return
+	}
+
 	// /<skill-name> — slash dispatch into the skills/commands registry.
 	if result := skills.Dispatch(query); result.Found {
 		var newMsg anthropic.MessageParam

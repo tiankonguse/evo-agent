@@ -1,6 +1,13 @@
 package tui
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"evo-agent/internal/ui"
+)
 
 // TestScrollWindow exercises the windowed-scroll math used by the completion
 // dropdown and session picker. The bug it guards against: before the fix,
@@ -69,5 +76,80 @@ func TestIsMeaningfulModelName(t *testing.T) {
 				t.Errorf("isMeaningfulModelName(%q) = %v; want %v", c.name, got, c.want)
 			}
 		})
+	}
+}
+
+// TestListenForEventsBatchesQueuedEvents proves the burst-handling fix:
+// when many events are already queued in the channel before the listener
+// fires, listenForEvents must drain them all into a single
+// AgentEventBatchMsg instead of returning one event at a time. Without
+// this, every event walks through Update→View on its own, the channel
+// fills faster than the renderer drains, and Sink backpressure stalls
+// the agent — which is the bug we're fixing.
+func TestListenForEventsBatchesQueuedEvents(t *testing.T) {
+	ch := make(chan ui.Event, 64)
+	m := &Model{eventCh: ch}
+
+	// Pre-queue several events so the drain side of the listener has
+	// material to scoop up after the blocking first read.
+	for i := 0; i < 5; i++ {
+		ch <- ui.Event{Kind: ui.EvText, Text: "burst"}
+	}
+
+	cmd := m.listenForEvents()
+	if cmd == nil {
+		t.Fatal("listenForEvents returned nil Cmd")
+	}
+
+	done := make(chan tea.Msg, 1) // tea.Msg = interface{}; use any-value channel
+	go func() { done <- cmd() }()
+
+	var msg tea.Msg
+	select {
+	case msg = <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("listener Cmd did not return")
+	}
+
+	batch, ok := msg.(AgentEventBatchMsg)
+	if !ok {
+		t.Fatalf("Cmd returned %T; want AgentEventBatchMsg", msg)
+	}
+	if len(batch) != 5 {
+		t.Errorf("batch length = %d; want 5 (drain failed to scoop queued events)", len(batch))
+	}
+}
+
+// TestListenForEventsBlocksUntilEvent guards the other half of the
+// contract: when the channel is empty, the listener Cmd must BLOCK,
+// not spin or return an empty batch — otherwise Bubble Tea's command
+// runner would chew CPU re-arming itself.
+func TestListenForEventsBlocksUntilEvent(t *testing.T) {
+	ch := make(chan ui.Event, 4)
+	m := &Model{eventCh: ch}
+
+	cmd := m.listenForEvents()
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+
+	select {
+	case msg := <-done:
+		t.Fatalf("listener returned %T while channel was empty — should have blocked", msg)
+	case <-time.After(30 * time.Millisecond):
+		// good — listener is blocked waiting
+	}
+
+	ch <- ui.Event{Kind: ui.EvDone}
+	select {
+	case msg := <-done:
+		batch, ok := msg.(AgentEventBatchMsg)
+		if !ok {
+			t.Fatalf("got %T; want AgentEventBatchMsg", msg)
+		}
+		if len(batch) != 1 || batch[0].Kind != ui.EvDone {
+			t.Errorf("batch = %+v; want exactly one EvDone event", batch)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("listener did not unblock after event was sent")
 	}
 }

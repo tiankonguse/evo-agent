@@ -76,24 +76,42 @@ func renderToolCall(b Block, w int) string {
 	callLine := fmt.Sprintf(" %s %s %s%s", icon, name, args, toolArgsStyle.Render(dur))
 	lines = append(lines, callLine)
 
-	// Tool result — truncated to defaultResultRows, no toggle
+	// Tool result — capped by both rune count and row count, whichever
+	// kicks in first. The char cap is the primary limiter (avoids huge
+	// blobs scrolling the transcript); the row cap is a safety net for
+	// pathological inputs that pack many newlines into few chars.
 	if b.HasResult {
 		lines = append(lines, resultBodyStyle.Width(w).Render("  Result:"))
-		resultLines := strings.Split(b.Result, "\n")
-		shown := resultLines
-		if len(resultLines) > defaultResultRows {
-			shown = resultLines[:defaultResultRows]
+
+		preview, truncated, totalRunes := truncateResult(b.Result, defaultResultChars)
+		previewLines := strings.Split(preview, "\n")
+		if len(previewLines) > defaultResultRows {
+			previewLines = previewLines[:defaultResultRows]
+			truncated = true
 		}
-		for _, l := range shown {
+		for _, l := range previewLines {
 			lines = append(lines, resultBodyStyle.Width(w).Render(l))
 		}
-		if len(resultLines) > defaultResultRows {
-			more := fmt.Sprintf("  … %d more lines", len(resultLines)-defaultResultRows)
+		if truncated {
+			more := fmt.Sprintf("  … truncated (%d chars total)", totalRunes)
 			lines = append(lines, toolMoreStyle.Width(w).Render(more))
 		}
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// truncateResult returns a preview limited to `maxRunes` characters.
+// Counted in runes so multi-byte (CJK) content is sliced cleanly. Returns
+// (preview, truncated, totalRunes) — the count is reported back so the
+// caller can render "… truncated (N chars total)" with a real number.
+func truncateResult(s string, maxRunes int) (preview string, truncated bool, totalRunes int) {
+	runes := []rune(s)
+	totalRunes = len(runes)
+	if totalRunes <= maxRunes {
+		return s, false, totalRunes
+	}
+	return string(runes[:maxRunes]), true, totalRunes
 }
 
 // renderStatusBar renders the bottom status bar as a single line.

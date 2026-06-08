@@ -4,7 +4,20 @@ import "charm.land/lipgloss/v2"
 
 // Layout constants
 const (
-	defaultResultRows = 10 // lines shown before truncating a tool-result block
+	// defaultResultRows is the legacy row-based cap kept as a safety net
+	// for pathological cases where 100 characters happen to span dozens
+	// of empty lines (e.g. a result that's mostly newlines). Whichever
+	// limit kicks in first wins.
+	defaultResultRows = 10
+
+	// defaultResultChars caps tool-result previews to a fixed number of
+	// runes — picked so most one-shot results fit on a single TUI line
+	// without scrolling the user's transcript off-screen. The full
+	// payload is still in .evo-agent/tool-results/<id>.txt for anything
+	// over 30 000 chars (see internal/tools/persist.go); this cap is
+	// purely a display concern. Counted in runes (not bytes) so CJK
+	// content isn't sliced mid-character.
+	defaultResultChars = 100
 )
 
 var (

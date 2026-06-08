@@ -57,6 +57,12 @@ func main() {
 	tools.InitMCP()
 	defer tools.ShutdownMCP()
 
+	// Load the per-project disabled-tools list (.evo-agent/disabled_tools.json).
+	// Must run AFTER InitMCP so MCP tool names are also visible to the disable
+	// filter on the very first Tools() call. The /tools command (REPL + TUI
+	// picker) is the only writer at runtime; we just rehydrate here.
+	tools.LoadDisabled(cfg.ProjectDir)
+
 	// Load persistent memories
 	tools.GlobalMemory.Init(cfg.ProjectDir)
 

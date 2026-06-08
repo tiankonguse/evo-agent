@@ -11,6 +11,7 @@ import (
 
 	"evo-agent/internal/session"
 	"evo-agent/internal/skills"
+	"evo-agent/internal/tools"
 	"evo-agent/internal/ui"
 )
 
@@ -18,6 +19,16 @@ import (
 
 // AgentEventMsg wraps a ui.Event for Bubble Tea.
 type AgentEventMsg ui.Event
+
+// AgentEventBatchMsg carries multiple ui.Events drained in one go from the
+// sink channel. Batching matters because the previous one-event-per-cycle
+// design serialized every render through the Bubble Tea Update→View loop,
+// and on bursts (e.g. several teammates emitting alongside the lead's tool
+// burst) the channel would fill faster than View could redraw, eventually
+// triggering Sink backpressure. listenForEvents now blocks on the first
+// event then opportunistically drains everything else already queued, so
+// View runs once per burst instead of once per event.
+type AgentEventBatchMsg []ui.Event
 
 // AgentDoneMsg signals the agent goroutine finished processing a turn.
 type AgentDoneMsg struct{}
@@ -79,6 +90,16 @@ type Model struct {
 	sessionPickerActive bool
 	sessionPickerItems  []session.SessionListEntry
 	sessionPickerIdx    int
+
+	// Tools picker (triggered by typing exactly "/tools").
+	// Lets the user disable/enable tools to shrink the per-turn tool
+	// catalogue (which adds up to a non-trivial token spend on every
+	// LLM round-trip). Up/Down navigate; Space toggles the highlighted
+	// entry's disabled flag (persisted immediately to disabled_tools.json
+	// inside the picker handler); Enter / Esc close the picker.
+	toolsPickerActive bool
+	toolsPickerItems  []tools.ToolEntry
+	toolsPickerIdx    int
 }
 
 // NewModel creates the initial TUI model.
@@ -94,10 +115,26 @@ func NewModel(info SidebarInfo, queryCh chan<- string, eventCh <-chan ui.Event) 
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+enter", "alt+enter")
 
-	// Merge skills + commands into a sorted list for autocomplete
-	allNames := make([]string, 0, len(info.Skills)+len(info.Commands))
+	// Merge skills + commands into a sorted list for autocomplete.
+	// "tools" is a pure-client command implemented inside this package
+	// (its picker state lives on the Model) — it has no markdown file in
+	// the skills/commands registry, so we inject the name explicitly so
+	// it shows up in the slash-completion dropdown alongside /resume,
+	// /goal, etc. The duplicate guard handles the case where a user adds
+	// a custom .evo-agent/command/tools.md (theirs wins, ours is dropped).
+	allNames := make([]string, 0, len(info.Skills)+len(info.Commands)+1)
 	allNames = append(allNames, info.Skills...)
 	allNames = append(allNames, info.Commands...)
+	hasTools := false
+	for _, n := range allNames {
+		if n == "tools" {
+			hasTools = true
+			break
+		}
+	}
+	if !hasTools {
+		allNames = append(allNames, "tools")
+	}
 	sort.Strings(allNames)
 
 	return Model{
@@ -139,6 +176,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentEventMsg:
 		return m.handleAgentEvent(ui.Event(msg))
 
+	case AgentEventBatchMsg:
+		return m.handleAgentEventBatch([]ui.Event(msg))
+
 	case AgentDoneMsg:
 		m.busy = false
 		return m, nil
@@ -174,6 +214,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "escape":
+		if m.toolsPickerActive {
+			m.toolsPickerActive = false
+			m.textarea.Reset()
+			return m, nil
+		}
 		if m.sessionPickerActive {
 			m.sessionPickerActive = false
 			return m, nil
@@ -185,6 +230,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up":
+		if m.toolsPickerActive && len(m.toolsPickerItems) > 0 {
+			m.toolsPickerIdx--
+			if m.toolsPickerIdx < 0 {
+				m.toolsPickerIdx = len(m.toolsPickerItems) - 1
+			}
+			return m, nil
+		}
 		if m.sessionPickerActive && len(m.sessionPickerItems) > 0 {
 			m.sessionPickerIdx--
 			if m.sessionPickerIdx < 0 {
@@ -207,6 +259,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "down":
+		if m.toolsPickerActive && len(m.toolsPickerItems) > 0 {
+			m.toolsPickerIdx++
+			if m.toolsPickerIdx >= len(m.toolsPickerItems) {
+				m.toolsPickerIdx = 0
+			}
+			return m, nil
+		}
 		if m.sessionPickerActive && len(m.sessionPickerItems) > 0 {
 			m.sessionPickerIdx++
 			if m.sessionPickerIdx >= len(m.sessionPickerItems) {
@@ -228,6 +287,26 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case " ":
+		// Space toggles the highlighted tool's disabled flag while the
+		// picker is open. Persistence happens inside tools.SetDisabled
+		// (writes .evo-agent/disabled_tools.json), so the change is
+		// effective for the very next LLM round-trip — no restart needed.
+		if m.toolsPickerActive && len(m.toolsPickerItems) > 0 {
+			item := m.toolsPickerItems[m.toolsPickerIdx]
+			if err := tools.SetDisabled(item.Name, !item.Disabled); err == nil {
+				m.toolsPickerItems[m.toolsPickerIdx].Disabled = !item.Disabled
+			}
+			return m, nil
+		}
+		if !m.busy {
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(msg)
+			m.updateCompletion()
+			return m, cmd
+		}
+		return m, nil
+
 	case "tab":
 		if m.completionActive && len(m.completionItems) > 0 {
 			selected := m.completionItems[m.completionIdx]
@@ -245,6 +324,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		if m.busy {
+			return m, nil
+		}
+		// Tools picker active: Enter closes the picker. The actual
+		// disable/enable mutation happens on Space; Enter is just
+		// "I'm done — go back to typing." We never submit "/tools" as
+		// a query because the text command path would just print a
+		// list, which isn't what the picker user expected.
+		if m.toolsPickerActive {
+			m.toolsPickerActive = false
+			m.textarea.Reset()
 			return m, nil
 		}
 		// Session picker active: accept selection (if any) and auto-submit.
@@ -290,6 +379,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.busy = true
 		m.completionActive = false
 		m.sessionPickerActive = false
+		m.toolsPickerActive = false
 		m.queryStartTime = time.Now()
 		// Print user message permanently into scroll buffer
 		w := m.width
@@ -311,9 +401,78 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleAgentEvent prints completed content permanently and tracks pending tools.
+// handleAgentEvent processes a single ui.Event and re-arms the listener.
+// Used when an AgentEventMsg arrives on its own (the legacy path; tests
+// still send single events). Production traffic flows through
+// handleAgentEventBatch which avoids re-arming the listener per event.
 func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
-	cmds := []tea.Cmd{m.listenForEvents()}
+	lines, otherCmds := m.processEvent(e)
+	cmds := otherCmds
+	if combined := joinPrintLines(lines); combined != "" {
+		cmds = append(cmds, tea.Println(combined))
+	}
+	cmds = append(cmds, m.listenForEvents())
+	return m, tea.Batch(cmds...)
+}
+
+// handleAgentEventBatch processes a slice of events drained from the sink
+// in one go, then re-arms the listener exactly once for the next batch.
+// This collapses the previous N-update-cycles-per-burst pattern into a
+// single Update→View pass per burst, which is what relieves channel
+// backpressure when the agent emits faster than the renderer can keep up.
+//
+// Critically, all per-event print strings are concatenated and emitted as
+// ONE tea.Println cmd — bubbletea v2's internal printLineMessage channel is
+// unbuffered and every printLineMessage triggers a full Update→View pass
+// (with 60 FPS framerate gating), so producing N tea.Println cmds for N
+// events makes the renderer take O(N × frame_time) seconds to drain. We've
+// observed >180 s real-time delay vs 2.3 s of actual agent work because of
+// this. One big Println keeps the renderer at one frame per burst.
+func (m *Model) handleAgentEventBatch(events []ui.Event) (tea.Model, tea.Cmd) {
+	var allLines []string
+	var cmds []tea.Cmd
+	for _, e := range events {
+		lines, other := m.processEvent(e)
+		allLines = append(allLines, lines...)
+		cmds = append(cmds, other...)
+	}
+	if combined := joinPrintLines(allLines); combined != "" {
+		cmds = append(cmds, tea.Println(combined))
+	}
+	cmds = append(cmds, m.listenForEvents())
+	return m, tea.Batch(cmds...)
+}
+
+// joinPrintLines stitches per-event rendered strings into one block. Each
+// input is expected to already include the visual padding the caller wants
+// before the next entry (currently a trailing "\n"); we only insert a blank
+// separator between entries that don't already end in newline so the output
+// is consistent regardless of caller convention. Returns "" when there's
+// nothing to print so the caller can skip the tea.Println cmd entirely.
+func joinPrintLines(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, s := range lines {
+		if s == "" {
+			continue
+		}
+		b.WriteString(s)
+		if i < len(lines)-1 && !strings.HasSuffix(s, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// processEvent renders one ui.Event into (printLines, otherCmds). Print
+// lines are returned as raw strings — the caller (batch or single-event
+// handler) is responsible for stitching them into a single tea.Println cmd
+// so we don't trigger one Bubble Tea render frame per event. Other cmds
+// (textarea.Focus, etc.) keep their own Cmd identity because they aren't
+// print messages and need their own goroutine.
+func (m *Model) processEvent(e ui.Event) (printLines []string, otherCmds []tea.Cmd) {
 	w := m.width
 	if w == 0 {
 		w = 80
@@ -324,7 +483,7 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 	case ui.EvThinking:
 		b := newThinkingBlock(e.Text)
 		b.Duration = time.Since(m.queryStartTime)
-		cmds = append(cmds, tea.Println(renderThinking(b, bw)+"\n"))
+		printLines = append(printLines, renderThinking(b, bw)+"\n")
 
 	case ui.EvText:
 		// Assistant text is markdown by convention (see system prompt).
@@ -335,7 +494,7 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		if rendered == "" {
 			rendered = textStyle.Width(bw).Render(e.Text)
 		}
-		cmds = append(cmds, tea.Println(rendered+"\n"))
+		printLines = append(printLines, rendered+"\n")
 
 	case ui.EvToolCall:
 		// Store pending; will be printed when result arrives
@@ -353,7 +512,7 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 					m.pendingTools[i].ToolStatus = StatusSuccess
 				}
 				// Print completed tool call permanently
-				cmds = append(cmds, tea.Println(renderToolCall(m.pendingTools[i], bw)+"\n"))
+				printLines = append(printLines, renderToolCall(m.pendingTools[i], bw)+"\n")
 				// Remove from pending
 				m.pendingTools = append(m.pendingTools[:i], m.pendingTools[i+1:]...)
 				break
@@ -363,13 +522,13 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 	case ui.EvDone:
 		m.busy = false
 		elapsed := time.Since(m.queryStartTime)
-		cmds = append(cmds, tea.Println(elapsedStyle.Render("🕐 "+formatDuration(elapsed))+"\n"))
+		printLines = append(printLines, elapsedStyle.Render("🕐 "+formatDuration(elapsed))+"\n")
 		// Re-focus textarea so completion and input work after agent finishes
-		cmds = append(cmds, m.textarea.Focus())
+		otherCmds = append(otherCmds, m.textarea.Focus())
 
 	case ui.EvSystem:
 		if e.Text != "" {
-			cmds = append(cmds, tea.Println(systemStyle.Render(e.Text)+"\n"))
+			printLines = append(printLines, systemStyle.Render(e.Text)+"\n")
 		}
 
 	case ui.EvTokens:
@@ -387,7 +546,7 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 		if e.BlockSummary != "" {
 			tokenInfo := fmt.Sprintf("model=%s in=%d out=%d stop=%s blocks=[%s]",
 				e.Model, e.InputTokens, e.OutputTokens, e.StopReason, e.BlockSummary)
-			cmds = append(cmds, tea.Println(systemStyle.Render(tokenInfo)))
+			printLines = append(printLines, systemStyle.Render(tokenInfo))
 		}
 
 	case ui.EvTodo:
@@ -451,35 +610,35 @@ func (m *Model) handleAgentEvent(e ui.Event) (tea.Model, tea.Cmd) {
 			m.goalLastKind = "achieved"
 			m.goalLastNote = e.GoalReason
 			m.info.Goal = ""
-			cmds = append(cmds, tea.Println(systemStyle.Render(
+			printLines = append(printLines, systemStyle.Render(
 				"✓ /goal achieved: "+e.GoalReason,
-			)+"\n"))
+			)+"\n")
 		case "cleared":
 			m.goalActive = false
 			m.goalLastKind = "cleared"
 			m.goalLastNote = ""
 			m.info.Goal = ""
-			cmds = append(cmds, tea.Println(systemStyle.Render("◎ /goal cleared")+"\n"))
+			printLines = append(printLines, systemStyle.Render("◎ /goal cleared")+"\n")
 		case "capped":
 			m.goalActive = false
 			m.goalLastKind = "capped"
 			m.goalLastNote = "iteration cap"
 			m.info.Goal = ""
-			cmds = append(cmds, tea.Println(systemStyle.Render(fmt.Sprintf(
+			printLines = append(printLines, systemStyle.Render(fmt.Sprintf(
 				"× /goal capped at %d iterations — auto-cleared", e.GoalMaxIter,
-			))+"\n"))
+			))+"\n")
 		case "status":
 			if e.GoalText == "" {
-				cmds = append(cmds, tea.Println(systemStyle.Render("◎ /goal: no active goal")+"\n"))
+				printLines = append(printLines, systemStyle.Render("◎ /goal: no active goal")+"\n")
 			} else {
-				cmds = append(cmds, tea.Println(systemStyle.Render(fmt.Sprintf(
+				printLines = append(printLines, systemStyle.Render(fmt.Sprintf(
 					"◎ /goal active: %s (iter %d/%d)", e.GoalText, e.GoalIter, e.GoalMaxIter,
-				))+"\n"))
+				))+"\n")
 			}
 		}
 	}
 
-	return m, tea.Batch(cmds...)
+	return printLines, otherCmds
 }
 
 // ── View ─────────────────────────────────────────────────────────────────────
@@ -529,6 +688,11 @@ func (m *Model) View() tea.View {
 		parts = append(parts, panel)
 	}
 
+	// Show tools picker when /tools is typed alone
+	if panel := m.renderToolsPicker(w); panel != "" {
+		parts = append(parts, panel)
+	}
+
 	if m.busy {
 		parts = append(parts, inputBusyStyle.Render(spinnerFrame()+" Thinking…"))
 	}
@@ -556,12 +720,38 @@ func (m *Model) renderInputArea(w int) string {
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
-// listenForEvents returns a Cmd that blocks until the next event arrives on
-// the injected event channel.
+// listenForEvents returns a Cmd that blocks until the next event arrives,
+// then opportunistically drains every other event already queued on the
+// channel and returns them as a single AgentEventBatchMsg. This collapses
+// burst traffic (lead + teammates + bg/cron notifications all firing in
+// the same window) into one Update→View cycle, which is what keeps Sink
+// backpressure off the agent's hot path.
+//
+// Cap on per-batch drain (256) is defensive: even on a saturated buffer
+// we want to give the renderer a chance to draw between huge floods, so
+// downstream listeners stay responsive.
 func (m *Model) listenForEvents() tea.Cmd {
 	return func() tea.Msg {
-		e := <-m.eventCh
-		return AgentEventMsg(e)
+		first, ok := <-m.eventCh
+		if !ok {
+			// Channel closed — let the program tear down cleanly.
+			return AgentDoneMsg{}
+		}
+		batch := []ui.Event{first}
+		const maxBatch = 256
+	drain:
+		for len(batch) < maxBatch {
+			select {
+			case e, ok := <-m.eventCh:
+				if !ok {
+					break drain
+				}
+				batch = append(batch, e)
+			default:
+				break drain
+			}
+		}
+		return AgentEventBatchMsg(batch)
 	}
 }
 
@@ -581,6 +771,7 @@ func (m *Model) updateCompletion() {
 	if m.busy || len(val) == 0 || val[0] != '/' {
 		m.completionActive = false
 		m.sessionPickerActive = false
+		m.toolsPickerActive = false
 		return
 	}
 
@@ -595,6 +786,18 @@ func (m *Model) updateCompletion() {
 	// they're entering an explicit id.
 	if strings.HasPrefix(val, "/resume ") {
 		m.sessionPickerActive = false
+	}
+
+	// Special case: typing exactly "/tools" (no args) opens the tools picker.
+	// "/tools <subcommand>" (disable/enable/list/reset) bypasses the picker
+	// and falls through to ParseToolsCmd in the agent's Repl.
+	if trimmed == "/tools" {
+		m.completionActive = false
+		m.openToolsPicker()
+		return
+	}
+	if strings.HasPrefix(val, "/tools ") {
+		m.toolsPickerActive = false
 	}
 
 	// Extract the prefix after "/" (up to first space)
@@ -647,6 +850,21 @@ func (m *Model) openSessionPicker() {
 	m.sessionPickerItems = filtered
 	m.sessionPickerActive = true
 	m.sessionPickerIdx = 0
+}
+
+// openToolsPicker loads the tool roster (built-in + MCP) annotated with
+// each tool's current disabled flag, and activates the picker. Idempotent:
+// re-typing "/tools" while the picker is open just refreshes the list.
+//
+// We deliberately re-read on every open (rather than caching at startup)
+// so the picker reflects MCP servers that connected late or were added
+// to .evo-agent/mcp.json since launch.
+func (m *Model) openToolsPicker() {
+	m.toolsPickerItems = tools.AllToolEntries()
+	m.toolsPickerActive = true
+	if m.toolsPickerIdx >= len(m.toolsPickerItems) {
+		m.toolsPickerIdx = 0
+	}
 }
 
 // renderCompletion renders the autocomplete dropdown panel.
@@ -869,4 +1087,96 @@ func formatThousands(n int64) string {
 		}
 	}
 	return b.String()
+}
+
+// ── Tools picker ──────────────────────────────────────────────────────────────
+
+// renderToolsPicker draws the /tools dropdown. Each row carries a [✓]/[✗]
+// marker reflecting the current disabled flag, the tool name, and a
+// source label (builtin / mcp:<server>). Layout mirrors the session
+// picker so users only have one keyboard model to learn.
+//
+// Help line at the top spells out the controls because Space-toggles is
+// non-obvious. Empty state can't really happen (the registry always
+// has at least one built-in), but we handle it defensively.
+func (m *Model) renderToolsPicker(w int) string {
+	if !m.toolsPickerActive {
+		return ""
+	}
+
+	innerW := w - 4
+	if innerW < 40 {
+		innerW = 40
+	}
+
+	disabledCount := 0
+	for _, e := range m.toolsPickerItems {
+		if e.Disabled {
+			disabledCount++
+		}
+	}
+
+	header := completionItemStyle.Width(innerW).Render(fmt.Sprintf(
+		"  Tools  (%d total, %d disabled)  ↑/↓ select · Space toggle · Enter close",
+		len(m.toolsPickerItems), disabledCount,
+	))
+	lines := []string{header}
+
+	if len(m.toolsPickerItems) == 0 {
+		hint := completionItemStyle.Width(innerW).Render(
+			"  (no tools registered — this shouldn't happen, see /tools list)",
+		)
+		lines = append(lines, hint)
+		return completionBorderStyle.Width(w - 2).Render(strings.Join(lines, "\n"))
+	}
+
+	const maxShow = 12
+	startIdx, endIdx := scrollWindow(m.toolsPickerIdx, len(m.toolsPickerItems), maxShow)
+
+	if startIdx > 0 {
+		lines = append(lines, completionItemStyle.Width(innerW).Render(
+			fmt.Sprintf("  ↑ %d more", startIdx),
+		))
+	}
+
+	// Width budget for the name column. Keep room for marker + source.
+	nameW := 0
+	for i := startIdx; i < endIdx; i++ {
+		if n := len(m.toolsPickerItems[i].Name); n > nameW {
+			nameW = n
+		}
+	}
+	if nameW > 38 {
+		nameW = 38
+	}
+	if nameW < 12 {
+		nameW = 12
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		e := m.toolsPickerItems[i]
+		marker := "[✓]"
+		if e.Disabled {
+			marker = "[✗]"
+		}
+		name := e.Name
+		if len(name) > nameW {
+			name = name[:nameW-1] + "…"
+		}
+		row := fmt.Sprintf("  %s %-*s  %s", marker, nameW, name, e.Source)
+		if i == m.toolsPickerIdx {
+			row = completionSelectedStyle.Width(innerW).Render(row)
+		} else {
+			row = completionItemStyle.Width(innerW).Render(row)
+		}
+		lines = append(lines, row)
+	}
+
+	if endIdx < len(m.toolsPickerItems) {
+		lines = append(lines, completionItemStyle.Width(innerW).Render(
+			fmt.Sprintf("  ↓ %d more", len(m.toolsPickerItems)-endIdx),
+		))
+	}
+
+	return completionBorderStyle.Width(w - 2).Render(strings.Join(lines, "\n"))
 }

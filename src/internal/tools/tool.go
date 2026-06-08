@@ -29,13 +29,26 @@ func Register(def ToolDef) {
 
 // Tools returns all registered tool schemas ready for the Anthropic API.
 // Native tools come first, followed by any MCP tools.
+//
+// Tools whose name appears in the disable set (see disabled.go) are
+// filtered out — this is the single chokepoint that keeps the LLM from
+// seeing turned-off tools in any code path (lead loop, subagents,
+// teammates) without per-caller plumbing.
 func Tools() []anthropic.ToolUnionParam {
 	out := make([]anthropic.ToolUnionParam, 0, len(registry))
 	for _, d := range registry {
+		if IsDisabled(d.Schema.Name) {
+			continue
+		}
 		tool := d.Schema
 		out = append(out, anthropic.ToolUnionParam{OfTool: &tool})
 	}
-	out = append(out, MCPTools()...)
+	for _, t := range MCPTools() {
+		if t.OfTool != nil && IsDisabled(t.OfTool.Name) {
+			continue
+		}
+		out = append(out, t)
+	}
 	return out
 }
 
