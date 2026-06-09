@@ -123,6 +123,14 @@ type TeamProvider interface {
 	LoadPrompt() string
 }
 
+// AgentsProvider abstracts access to the custom-subagent registry. The
+// returned catalog string is injected into the main agent's system prompt
+// so the model knows which subagent_type values are available when calling
+// the task tool. Empty result = no custom agents loaded → section omitted.
+type AgentsProvider interface {
+	Catalog() string
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Builder
 // ────────────────────────────────────────────────────────────────────────────
@@ -137,6 +145,7 @@ type Builder struct {
 	plan           PlanProvider
 	goal           GoalProvider
 	team           TeamProvider
+	agents         AgentsProvider
 	agentMdContent string // loaded once at startup
 	memoryGuidance string // constant guidance text
 	planGuidance   string // constant plan workflow guidance
@@ -199,6 +208,13 @@ func (b *Builder) SetTeamGuidance(guidance string) {
 	b.teamGuidance = guidance
 }
 
+// SetAgentsProvider sets the custom-subagent provider so buildAgentsCatalog()
+// can inject the available custom agents into every turn's system prompt.
+// Wired by main.go to a thin adapter over the agents package.
+func (b *Builder) SetAgentsProvider(p AgentsProvider) {
+	b.agents = p
+}
+
 // Build assembles the full system prompt by joining all sections.
 // This is the primary entry point used by agent.Loop().
 func (b *Builder) Build() string {
@@ -244,6 +260,7 @@ func (b *Builder) BuildSections() []string {
 		// 项目维度，启动后固定
 		{"custom_agent_md", b.buildAgentMd()},      // Project guidance from Agent.md
 		{"skills_catalog", b.buildSkillsCatalog()}, // Available skills listing
+		{"agents_catalog", b.buildAgentsCatalog()}, // Available custom subagents
 		// 记忆可能变化，模型可能切换
 		{"memories", b.buildMemories()},       // Persistent memories across sessions
 		{"plan_status", b.buildPlanStatus()},  // Active session plans status
@@ -378,6 +395,17 @@ func (b *Builder) buildSkillsCatalog() string {
 	}
 	return "Skills available:\n" + catalog +
 		"\nUse load_skill when a task needs specialized instructions before you act."
+}
+
+// buildAgentsCatalog injects the list of custom subagents loaded from
+// .evo-agent/agents/ into the system prompt. The model uses this list to
+// decide when to invoke task() with subagent_type set. Empty string when
+// no custom agents are loaded so the section is dropped from the prompt.
+func (b *Builder) buildAgentsCatalog() string {
+	if b.agents == nil {
+		return ""
+	}
+	return b.agents.Catalog()
 }
 
 func (b *Builder) buildSlashCommands() string {

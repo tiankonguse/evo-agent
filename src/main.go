@@ -10,6 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"evo-agent/internal/agent"
+	"evo-agent/internal/agents"
 	"evo-agent/internal/config"
 	"evo-agent/internal/goal"
 	"evo-agent/internal/llm"
@@ -22,7 +23,7 @@ import (
 
 const (
 	agentName    = "evo-agent"
-	agentVersion = "0.18.0"
+	agentVersion = "0.20.0"
 	contextLimit = 200000 // Claude's context window (approx)
 )
 
@@ -86,6 +87,11 @@ func main() {
 	// Load skills and commands
 	skills.Init()
 
+	// Load custom subagent definitions from .evo-agent/agents/<name>.md
+	// (Markdown + YAML frontmatter, see docs/CUSTOM_AGENTS.md). Loaded
+	// after skills so the startup log lines appear in a consistent order.
+	agents.Init(cfg.ProjectDir)
+
 	// Build system prompt via the prompt builder
 	builder := prompt.NewBuilder(cfg, tools.GlobalMemory, skills.Provider{})
 
@@ -117,6 +123,10 @@ func main() {
 	// Wire active /goal provider so the system prompt always reflects the
 	// current condition.
 	builder.SetGoalProvider(goal.Global)
+
+	// Wire custom-subagent catalog into the system prompt so the model
+	// sees which subagent_type values are available when calling task().
+	builder.SetAgentsProvider(agentsProvider{})
 
 	a := agent.New(provider, cfg, builder)
 
@@ -307,3 +317,10 @@ func skillList() []string {
 	sort.Strings(names)
 	return names
 }
+
+// agentsProvider adapts the agents package's package-level Catalog()
+// function to the prompt.AgentsProvider interface. Stateless — kept as
+// a zero-sized struct so we don't have to plumb a registry instance.
+type agentsProvider struct{}
+
+func (agentsProvider) Catalog() string { return agents.Catalog() }

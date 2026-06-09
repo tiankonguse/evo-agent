@@ -233,7 +233,7 @@ Anthropic API 的 messages 是一个数组，每条消息有两个核心字段�
   {
     "role": "assistant",
     "content": [
-      { "type": "text", "text": "最大的文件是 evo_agent，占用 128M。" }
+      { "type": "text", "text": "最大的文件是 evo-agent，占用 128M。" }
     ]
   }
 ]
@@ -505,7 +505,7 @@ sequenceDiagram
     AgentLoop->>AgentLoop: history += [User: tool_result "128M evo-agent"]
 
     AgentLoop->>LLM: messages=[User, Assistant, User(tool_result)] + ...
-    LLM-->>AgentLoop: "最大的文件是 evo_agent，128M"
+    LLM-->>AgentLoop: "最大的文件是 evo-agent，128M"
     AgentLoop->>AgentLoop: history += [Assistant: "最大的文件是..."]
 
     AgentLoop->>REPL: 返回最终 history

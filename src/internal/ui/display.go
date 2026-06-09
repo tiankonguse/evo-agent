@@ -1,6 +1,10 @@
 package ui
 
-import "fmt"
+import (
+	"fmt"
+	"hash/fnv"
+	"strings"
+)
 
 // EventSink is the interface any display frontend must implement.
 // The agent and tools write events through this interface; the
@@ -26,14 +30,70 @@ var globalSink EventSink = TerminalSink{}
 // Used when running in --plain mode or when no TUI is active.
 type TerminalSink struct{}
 
+// subagentPalette is the rotating set of ANSI colors used for subagent
+// gutters. Each agentName is hashed to one of these colors so the same
+// agent always gets the same gutter color in a session, while different
+// agents are visually distinguishable.
+//
+// All entries are bold + bright-fg variants (90-97 range) so the gutter
+// pops against dark terminal themes — the previous regular-weight 30-37
+// range read as gray on default macOS / iTerm dark themes.
+var subagentPalette = []string{
+	ColorBoldBrightYellow,
+	ColorBoldBrightGreen,
+	ColorBoldBrightMagenta,
+	ColorBoldBrightRed,
+	ColorBoldBrightCyan,
+	ColorBoldBrightWhite,
+}
+
+// SubagentColor returns the ANSI color code assigned to agentName by FNV
+// hash modulo the subagent palette. Stable across the process lifetime.
+// Exported so the TUI sink (different package) can pick the matching color.
+func SubagentColor(agentName string) string {
+	if agentName == "" {
+		return ""
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(agentName))
+	return subagentPalette[int(h.Sum32())%len(subagentPalette)]
+}
+
+// IndentSubagent prefixes every line of body with a colored gutter bar so
+// the user can visually attribute the line to a delegated subagent.
+// Exported for the TUI sink to apply identical gutter styling on its side.
+//
+// The first line gets a header label "[<agentName>] " right after the
+// gutter so the user always sees which agent emitted this block, even
+// if the surrounding scrollback has scrolled the parent header off-screen.
+func IndentSubagent(agentName, body string) string {
+	if agentName == "" {
+		return body
+	}
+	color := SubagentColor(agentName)
+	gutter := color + "┃ " + ColorReset
+	header := color + "[" + agentName + "]" + ColorReset + " "
+
+	lines := strings.Split(body, "\n")
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		if i == 0 {
+			out[i] = gutter + header + line
+		} else {
+			out[i] = gutter + line
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 func (TerminalSink) Emit(e Event) {
 	switch e.Kind {
 	case EvThinking:
-		fmt.Printf("%sTHINKING: %s%s\n", ColorGreen, e.Text, ColorReset)
+		fmt.Println(IndentSubagent(e.AgentName, ColorGreen+"THINKING: "+e.Text+ColorReset))
 	case EvText:
-		fmt.Printf("%s%s%s\n", ColorCyan, e.Text, ColorReset)
+		fmt.Println(IndentSubagent(e.AgentName, ColorCyan+e.Text+ColorReset))
 	case EvToolCall:
-		fmt.Printf("%sDEBUG: Tool called: %s%s\n", ColorBlue, e.ToolName, ColorReset)
+		fmt.Println(IndentSubagent(e.AgentName, ColorBlue+"DEBUG: Tool called: "+e.ToolName+ColorReset))
 	case EvToolResult:
 		// Print a short preview of the tool output in plain mode.
 		const previewLen = 200
@@ -42,13 +102,14 @@ func (TerminalSink) Emit(e Event) {
 			preview = preview[:previewLen]
 		}
 		if preview != "" {
-			fmt.Println(preview)
+			fmt.Println(IndentSubagent(e.AgentName, preview))
 		}
 	case EvSystem:
-		fmt.Printf("%s%s%s\n", ColorMagenta, e.Text, ColorReset)
+		fmt.Println(IndentSubagent(e.AgentName, ColorMagenta+e.Text+ColorReset))
 	case EvTokens:
-		fmt.Printf("%sDEBUG: model=%s in=%d out=%d stop=%s blocks=[%s]%s\n",
+		line := fmt.Sprintf("%sDEBUG: model=%s in=%d out=%d stop=%s blocks=[%s]%s",
 			ColorMagenta, e.Model, e.InputTokens, e.OutputTokens, e.StopReason, e.BlockSummary, ColorReset)
+		fmt.Println(IndentSubagent(e.AgentName, line))
 	case EvDone:
 		// nothing to print in plain mode
 	case EvTodo:

@@ -58,3 +58,51 @@ func filterContent(content []anthropic.ContentBlockParamUnion) []anthropic.Conte
 	}
 	return out
 }
+
+// FilterIncompleteToolCalls drops assistant messages that contain a
+// `tool_use` block whose `tool_use_id` is never matched by a `tool_result`
+// later in the slice. Anthropic's API rejects message histories with such
+// orphan tool calls, so this pre-filter lets us hand off mid-turn message
+// state (e.g. when forking) without the API screaming.
+//
+// Mirrors `filterIncompleteToolCalls` in refs/runAgent.ts. Other message
+// types (user, attachment) pass through unchanged. The input is not
+// mutated; the returned slice is a fresh allocation.
+func FilterIncompleteToolCalls(messages []anthropic.MessageParam) []anthropic.MessageParam {
+	// Pass 1: collect every tool_use_id that has a matching tool_result.
+	resolved := map[string]bool{}
+	for _, m := range messages {
+		if m.Role != anthropic.MessageParamRoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if b.OfToolResult != nil && b.OfToolResult.ToolUseID != "" {
+				resolved[b.OfToolResult.ToolUseID] = true
+			}
+		}
+	}
+
+	// Pass 2: drop assistant messages whose tool_use blocks aren't all
+	// resolved. We drop the whole message rather than removing just the
+	// orphan tool_use because that would also strip the surrounding text
+	// that explains what the assistant was about to do — and partial
+	// assistant content is harder for the model to make sense of than
+	// the message simply not being there.
+	out := make([]anthropic.MessageParam, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == anthropic.MessageParamRoleAssistant {
+			hasOrphan := false
+			for _, b := range m.Content {
+				if b.OfToolUse != nil && b.OfToolUse.ID != "" && !resolved[b.OfToolUse.ID] {
+					hasOrphan = true
+					break
+				}
+			}
+			if hasOrphan {
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}

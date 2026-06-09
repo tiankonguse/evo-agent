@@ -62,8 +62,16 @@ var (
 			PaddingLeft(1)
 
 	// ── System / debug ────────────────────────────────────────────────────────
+	// Foreground brightened from the original #484f58 — that color was
+	// "subdued gray" on a light theme but read as illegible dark gray on
+	// the typical dark terminal background users actually run evo-agent
+	// against. #8b949e is GitHub's "muted text" used elsewhere in this
+	// stylesheet (toolArgsStyle), giving system / debug lines (and the
+	// `/agents` / `/tools` list output, which routes through PrintSystem)
+	// enough contrast to be readable while staying clearly secondary to
+	// the primary textStyle / toolNameStyle.
 	systemStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#484f58")).
+			Foreground(lipgloss.Color("#8b949e")).
 			Italic(true).
 			PaddingLeft(1)
 

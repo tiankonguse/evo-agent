@@ -116,24 +116,27 @@ func NewModel(info SidebarInfo, queryCh chan<- string, eventCh <-chan ui.Event) 
 	ta.KeyMap.InsertNewline.SetKeys("ctrl+enter", "alt+enter")
 
 	// Merge skills + commands into a sorted list for autocomplete.
-	// "tools" is a pure-client command implemented inside this package
-	// (its picker state lives on the Model) — it has no markdown file in
-	// the skills/commands registry, so we inject the name explicitly so
-	// it shows up in the slash-completion dropdown alongside /resume,
-	// /goal, etc. The duplicate guard handles the case where a user adds
-	// a custom .evo-agent/command/tools.md (theirs wins, ours is dropped).
-	allNames := make([]string, 0, len(info.Skills)+len(info.Commands)+1)
+	// "tools" and "agents" are pure-client commands implemented inside the
+	// agent package (their handlers live in toolscmd.go / agentscmd.go) —
+	// they have no markdown file in the skills/commands registry, so we
+	// inject the names explicitly so they show up in the slash-completion
+	// dropdown alongside /resume, /goal, etc. The duplicate guard handles
+	// the case where a user adds a custom .evo-agent/command/<name>.md
+	// (theirs wins, ours is dropped).
+	allNames := make([]string, 0, len(info.Skills)+len(info.Commands)+2)
 	allNames = append(allNames, info.Skills...)
 	allNames = append(allNames, info.Commands...)
-	hasTools := false
-	for _, n := range allNames {
-		if n == "tools" {
-			hasTools = true
-			break
+	for _, builtin := range []string{"tools", "agents"} {
+		exists := false
+		for _, n := range allNames {
+			if n == builtin {
+				exists = true
+				break
+			}
 		}
-	}
-	if !hasTools {
-		allNames = append(allNames, "tools")
+		if !exists {
+			allNames = append(allNames, builtin)
+		}
 	}
 	sort.Strings(allNames)
 
@@ -483,7 +486,7 @@ func (m *Model) processEvent(e ui.Event) (printLines []string, otherCmds []tea.C
 	case ui.EvThinking:
 		b := newThinkingBlock(e.Text)
 		b.Duration = time.Since(m.queryStartTime)
-		printLines = append(printLines, renderThinking(b, bw)+"\n")
+		printLines = append(printLines, indentSubagent(e.AgentName, renderThinking(b, bw))+"\n")
 
 	case ui.EvText:
 		// Assistant text is markdown by convention (see system prompt).
@@ -494,11 +497,15 @@ func (m *Model) processEvent(e ui.Event) (printLines []string, otherCmds []tea.C
 		if rendered == "" {
 			rendered = textStyle.Width(bw).Render(e.Text)
 		}
-		printLines = append(printLines, rendered+"\n")
+		printLines = append(printLines, indentSubagent(e.AgentName, rendered)+"\n")
 
 	case ui.EvToolCall:
-		// Store pending; will be printed when result arrives
-		m.pendingTools = append(m.pendingTools, newToolBlock(e.ToolID, e.ToolName, e.ToolInput))
+		// Store pending; will be printed when result arrives. AgentName is
+		// stashed on the toolBlock so the printed output (when the matching
+		// EvToolResult arrives) inherits the subagent gutter styling.
+		tb := newToolBlock(e.ToolID, e.ToolName, e.ToolInput)
+		tb.AgentName = e.AgentName
+		m.pendingTools = append(m.pendingTools, tb)
 
 	case ui.EvToolResult:
 		for i, b := range m.pendingTools {
@@ -511,8 +518,11 @@ func (m *Model) processEvent(e ui.Event) (printLines []string, otherCmds []tea.C
 				} else {
 					m.pendingTools[i].ToolStatus = StatusSuccess
 				}
-				// Print completed tool call permanently
-				printLines = append(printLines, renderToolCall(m.pendingTools[i], bw)+"\n")
+				// Print completed tool call permanently. If this came from a
+				// subagent, indent + tint with the same gutter as text/system
+				// events so the user can attribute the line at a glance.
+				rendered := renderToolCall(m.pendingTools[i], bw)
+				printLines = append(printLines, indentSubagent(m.pendingTools[i].AgentName, rendered)+"\n")
 				// Remove from pending
 				m.pendingTools = append(m.pendingTools[:i], m.pendingTools[i+1:]...)
 				break
@@ -528,7 +538,7 @@ func (m *Model) processEvent(e ui.Event) (printLines []string, otherCmds []tea.C
 
 	case ui.EvSystem:
 		if e.Text != "" {
-			printLines = append(printLines, systemStyle.Render(e.Text)+"\n")
+			printLines = append(printLines, indentSubagent(e.AgentName, systemStyle.Render(e.Text))+"\n")
 		}
 
 	case ui.EvTokens:

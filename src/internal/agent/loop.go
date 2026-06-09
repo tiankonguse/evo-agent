@@ -8,6 +8,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
+	"evo-agent/internal/agents"
 	"evo-agent/internal/config"
 	"evo-agent/internal/llm"
 	"evo-agent/internal/prompt"
@@ -49,6 +50,12 @@ func New(provider llm.Provider, cfg *config.Config, pb *prompt.Builder) *Agent {
 	})
 	tools.RegisterNamedSubagentRunner(func(systemPrompt, agentName string, messages []anthropic.MessageParam) string {
 		return a.RunSubagent(systemPrompt, messages, agentName)
+	})
+	tools.RegisterCustomSubagentRunner(func(def agents.AgentDefinition, userPrompt string) string {
+		return a.RunCustomSubagent(def, userPrompt)
+	})
+	tools.RegisterForkSubagentRunner(func(directive, name string, parentMessages []anthropic.MessageParam) string {
+		return a.RunForkSubagent(directive, name, parentMessages)
 	})
 	tools.RegisterTeammateRunner(a.runTeammateTurn)
 	return a

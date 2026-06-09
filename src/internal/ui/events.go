@@ -53,6 +53,12 @@ type TeammateSnapshot struct {
 type Event struct {
 	Kind EventKind
 
+	// AgentName, when non-empty, identifies the subagent that emitted this
+	// event. Sinks use it to render the line with a distinguishing color
+	// and an indent gutter so the user can see at a glance which output
+	// came from a delegated agent vs the main loop. Empty = main agent.
+	AgentName string
+
 	// EvThinking, EvText, EvSystem
 	Text string
 

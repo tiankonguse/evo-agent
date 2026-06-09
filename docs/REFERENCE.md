@@ -18,7 +18,10 @@ src/                       Go module root (module name: evo-agent)
   internal/
     agent/                 LLM loop, context compaction, subagent
       loop.go              Loop() — agentic turn cycle
-      subagent.go          RunSubagent() — child agent with fresh context
+      subagent.go          RunSubagent() — generic child agent (inherits parent prompt)
+      custom_subagent.go   RunCustomSubagent() — named agents from .evo-agent/agents/
+      fork.go              RunForkSubagent() — child inherits parent's full conversation
+    agents/                Custom-subagent registry (Markdown + YAML frontmatter loader)
     config/                Env-var configuration (config.go)
     skills/                Skill + slash-command registry, dispatcher
       registry.go          Init(), InitCommands(), Catalog(), Load(), LookupForSlash()
@@ -402,6 +405,36 @@ return lastText      // only the final summary returns; child history GC'd
 
 - `buildExtractionPrompt(memDir, existing)` — used by `remember` tool. Receives conversation history; subagent reads/writes/edits memory files. After completion, `GlobalMemory.LoadAll()` reloads.
 - `buildConsolidatePrompt(...)` — used by `consolidate_memory` tool.
+
+### Custom subagents (`agents/registry.go` + `agent/custom_subagent.go`)
+
+Markdown + YAML frontmatter at `.evo-agent/agents/<name>.md` define **named specialists**. Loaded once at startup via `agents.Init(cfg.ProjectDir)`.
+
+Frontmatter keys: `name` (default = filename), `description` (advertised to main agent), `model` (`inherit` / empty = parent's model), `max_turns` (default 30). Body = full system prompt for the child.
+
+Routing: `task({subagent_type: "<name>", prompt, description})` — the task tool handler (`tools/task.go`) looks up `agents.Get(name)` and dispatches via the new `customSubagentRunner` callback registered in `agent.New()`. Omitting `subagent_type` falls back to the existing generic subagent (parent prompt inherited).
+
+Differences from the generic path: the child's system prompt is `def.SystemPrompt + envEnvelope` — **not** `parent.Build() + addendum`. Both paths share `Agent.runSubagentLoop` (turn loop, sidechain recorder, UI labeling).
+
+Available agent types are injected into the main agent's system prompt as a dynamic `agents_catalog` section (see `prompt/builder.go`'s `AgentsProvider`), so the model knows which `subagent_type` values are valid.
+
+The REPL / TUI accepts `/agents`, `/agents list`, `/agents show <name>`, and `/agents reload` as pure-client inspection commands (parser + handler in `agent/agentscmd.go`, dispatched from `agent/repl.go` before the skills registry).
+
+Full guide: [`docs/CUSTOM_AGENTS.md`](CUSTOM_AGENTS.md).
+
+### Fork subagent (`agent/fork.go`)
+
+`task({fork: true, prompt: <directive>, description})` invokes a child that inherits the parent's **full** system prompt (`a.prompt.Build()`) AND complete message history. The fork is meant to take over an open-ended question or implementation task without dragging the intermediate tool noise back into the parent's context.
+
+Mutually exclusive with `subagent_type` — the task tool handler rejects setting both.
+
+The parent's history reaches the fork via `tools.getConversationMessages()` (set by the agent loop each turn). Before the fork's first API call, `FilterIncompleteToolCalls` strips any orphan `tool_use` from the in-flight parent assistant message (the one that just called the `task` tool) — Anthropic rejects orphans with 400.
+
+The fork's directive user message is prefixed with a `<fork-boilerplate>` block (see `agent/fork.go`) that tells the model: "you are a forked worker, don't spawn sub-agents, output `Scope:` first, keep it under 500 words". This is the same shape as Claude Code's fork (refs/forkSubagent.ts).
+
+Recursion guard: the fork's tool list is `tools.ToolsExcept("task")`, so it can't `task({fork:true, ...})` itself. `forkSubagentMaxTurns = 60` (vs 30 for generic) reflects that forks are typically longer-running.
+
+UI: fork output is tagged with the fork's name (default = description) so the TUI's gutter rendering colors it the same way custom-agent output is colored.
 
 ---
 

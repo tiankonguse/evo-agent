@@ -149,6 +149,15 @@ func (r *Repl) handleTurn(query string) {
 		return
 	}
 
+	// /agents | /agents list | /agents show <name> | /agents reload
+	// — pure client-side custom-subagent roster inspection. Never drives
+	// an LLM. Useful for confirming what subagent_type values are valid
+	// before asking the model, and for reloading after editing files.
+	if act, arg := ParseAgentsCmd(query); act != AgentsCmdNotMatched {
+		r.handleAgentsCmd(act, arg)
+		return
+	}
+
 	// /<skill-name> — slash dispatch into the skills/commands registry.
 	if result := skills.Dispatch(query); result.Found {
 		var newMsg anthropic.MessageParam

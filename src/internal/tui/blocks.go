@@ -27,6 +27,11 @@ type Block struct {
 	ID   string
 	Kind BlockKind
 
+	// AgentName, when set, identifies the subagent that produced this
+	// block. Sinks use it to render a colored gutter / indent so the user
+	// can attribute the line at a glance. Empty = main agent.
+	AgentName string
+
 	// KindThinking / KindText / KindSystem
 	Content string
 
