@@ -256,14 +256,25 @@ Runs `bash -c <command>` in the current working directory.
 
 ```go
 type ReadFileInput struct {
-    Path  string `json:"path"`
-    Limit int    `json:"limit,omitempty"`
+    FilePath string `json:"file_path"`         // absolute or cwd-relative
+    Offset   int    `json:"offset,omitempty"`  // 1-indexed line to start at
+    Limit    int    `json:"limit,omitempty"`   // max lines to read (0 = default 2000)
 }
 ```
 
-Reads the file at `path`. If `limit > 0`, truncates to the first `limit` lines and appends a `"... (N more lines)"` note. Max 50 000 characters.
+Re-implementation inspired by Claude Code's official `FileReadTool`. Reads a text file from the local filesystem and returns it in `cat -n` format (`%6d\t<content>\n`). Default cap is **2000 lines** / **256 KB**; provide `offset` + `limit` to read a window of a larger file.
 
-Also calls `TrackRecentFile` in the loop's `CompactState` when invoked.
+Behaviors:
+
+- **Empty file** → `<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>`.
+- **Offset out of range** → `<system-reminder>Warning: the file exists but is shorter than the provided offset (N). The file has M lines.</system-reminder>`.
+- **Dedup**: if the same `(file_path, offset, limit)` is read again with mtime unchanged, returns a small `File unchanged since last read…` stub instead of resending the bytes (saves cache_creation tokens). The dedup entry is invalidated automatically by `edit_file` / `write_file` against the same path.
+- **Binary refusal**: extensions like `.zip`, `.exe`, `.png`, `.pdf`, `.so` are rejected up front. Use the `bash` tool with file-specific utilities instead.
+- **Device blocklist**: refuses `/dev/zero`, `/dev/random`, `/dev/stdin`, `/proc/<pid>/fd/{0,1,2}`, and the like — would block or never EOF.
+- **CRLF normalization**: trailing `\r` is stripped before line-numbering.
+- **File not found**: returns `read_file: File does not exist. Current working directory: …. Did you mean <similar>?` when a same-stem neighbor exists in the parent directory.
+
+Also calls `TrackRecentFile` on the loop's `CompactState` for compaction-time hints.
 
 ---
 

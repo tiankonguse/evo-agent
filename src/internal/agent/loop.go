@@ -275,7 +275,13 @@ func (a *Agent) Loop(state *LoopState) bool {
 			if block.Type == "tool_use" && block.Name == "read_file" {
 				var input map[string]interface{}
 				if err := json.Unmarshal(block.Input, &input); err == nil {
-					if path, ok := input["path"].(string); ok {
+					// New schema uses file_path; fall back to legacy path key
+					// so transcripts recorded before the rename still resolve.
+					path, ok := input["file_path"].(string)
+					if !ok {
+						path, ok = input["path"].(string)
+					}
+					if ok {
 						TrackRecentFile(state.CompactState, path)
 					}
 				}

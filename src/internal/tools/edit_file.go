@@ -61,5 +61,13 @@ func runEditFile(path, oldStr, newStr string) (string, error) {
 	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
+	// Invalidate any cached read_file dedup state for this path so the next
+	// read_file call reads the post-edit bytes instead of returning the
+	// stale "unchanged" stub. resolvePath errors are swallowed — failing to
+	// resolve here is non-fatal (worst case the dedup short-circuit fires
+	// once with stale content; the next mtime-changing edit clears it).
+	if abs, resolveErr := resolvePath(path); resolveErr == nil {
+		InvalidateReadState(abs)
+	}
 	return fmt.Sprintf("Edited %s", path), nil
 }

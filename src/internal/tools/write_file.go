@@ -39,5 +39,9 @@ func runWriteFile(path, content string) (string, error) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("write_file: %w", err)
 	}
+	// Drop the read_file dedup entry so the next read sees the new bytes.
+	if abs, resolveErr := resolvePath(path); resolveErr == nil {
+		InvalidateReadState(abs)
+	}
 	return fmt.Sprintf("Wrote %d bytes to %s", len(content), path), nil
 }
